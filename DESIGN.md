@@ -1194,6 +1194,21 @@ Rules:
   serialization with unspecified field ordering.
 - Do not use `std::collections::hash_map::DefaultHasher`. See section 25.4.
 
+**The defaults are settled by this, not by intention.** Phase 7's remaining
+tuning task was to fix the defaults an algorithm version ships with, and a
+fingerprint over the complete effective configuration is what fixes them:
+`crates/wgvb-store/tests/fingerprint.rs` carries the fingerprint of
+`Config::default` as a written-down constant, so moving any default — a
+wavelength, a weight, a threshold, an octave count — fails that test on the spot.
+Updating the constant is the compatibility decision, and it belongs in a commit
+message alongside the `ALGORITHM_VERSION` bump that goes with it.
+
+The `ciborium` float encoding is worth knowing about here: it writes each float
+in the shortest CBOR form that represents it exactly, so the encoding is a
+dependency's policy rather than this crate's. That is still binary and still
+exact — the rule that an `f64` is hashed as its bits is kept — and the written
+constant is the tripwire if a release ever changes the policy.
+
 ---
 
 ## 22. Concurrency
@@ -1541,6 +1556,21 @@ Given the throughput in section 31, **do not build the tile cache in the first
 implementation.** Measure first. A cache that is never faster than regeneration
 is pure liability: a fingerprint to validate and a staleness bug to hit.
 
+**Measured, phase 7: no tile cache.** `crates/wgvb/tests/bench.rs` puts tile
+generation at roughly 130,000 tiles per second per core on an M-series laptop —
+about 7.4 microseconds a tile, near-identical for single tiles, chunk fills, and
+a radius-32 region, which is what a pure function with no shared state should
+look like. A 400x300 diagnostic window is therefore around 0.9 seconds of one
+core, and the scrolling steps in section 29.1 move by half a window.
+
+That is above the floor and below the hope; see section 31. It is still not an
+argument for the cache, for two reasons. A cache would have to be validated
+against the configuration fingerprint on every hit, and the thing it would save
+is already embarrassingly parallel: section 22 permits a `rayon` batch fill, and
+eight cores is a larger and simpler win than any cache with a coherency story.
+Revisit this when a profile shows the same coordinates being generated
+repeatedly, which a bounded viewport render does not do.
+
 ### 27.7 Connection handling
 
 `rusqlite::Connection` is `Send` but not `Sync`. Either give each thread its own
@@ -1574,10 +1604,18 @@ wgvb/
                 region.rs
         wgvb-store/             single-world SQLite persistence
             migrations/
-            src/lib.rs
+                0001_initial.sql
+            src/
+                lib.rs          APPLICATION_ID, OpenError, re-exports
+                schema.rs       the user_version migration ladder
+                world.rs        World; creation and the opening gates
+                overlay.rs      sparse coordinate-keyed player overlays
+                fingerprint.rs  canonical CBOR and SHA-256
         wgvb-render/            bounded viewport rendering; owns the hexx dependency
             src/
                 lib.rs
+                palette.rs      the diagnostic ramp, climate table, terrain list
+                overlay.rs      Overlays; what the player knows
                 frame.rs        PlayerFrame; player-relative <-> canonical
         wgvb-map/               diagnostic and player-facing CLI
             src/main.rs
@@ -1789,6 +1827,49 @@ draws, and a second copy of it in the server crate would only pin it twice.
 
 ---
 
+### 29.2 Player overlays
+
+Generated terrain and player overlays are stored apart (section 27.6) and meet
+in exactly one place: `wgvb_render::render_player`, at render time, in pixels.
+Nothing composed there can reach back into generation, and a tile's terrain is
+the same whether or not anybody has ever looked at it.
+
+`Overlays` is a plain value — sorted `Vec`s of coordinates and of
+`(coordinate, name)` — and `wgvb-render` does not depend on `wgvb-store`. The
+two are siblings, and a renderer that could open a database would be a renderer
+that could be handed a world rather than a viewport. The CLI does the loading:
+one range scan over the smallest `(q, r)` box holding the window's tiles, which
+is a superset for a wrapped window and correct for the same reason, since an
+overlay outside the window is never drawn.
+
+Sorted rather than hashed, because markers overlap pixels. Section 29 requires a
+stable render order, and a `HashSet` would decide which of two touching markers
+wins by hash seed.
+
+Two composition rules, and they differ on purpose:
+
+- **Fog hides terrain.** An undiscovered tile is drawn as the fog color rather
+  than as what is there, for every layer identically — a fogged tile that leaked
+  its heat band would be a map telling the player the climate of ground they
+  have never seen.
+- **Fog does not hide the player's own marks.** A settlement marker is drawn
+  whether or not the tile under it is discovered. It is something the player
+  built; hiding it would be the map lying to its owner.
+
+**An empty discovery set means fog is switched off, not that nothing has been
+seen.** A world that records no discoveries is one where exploration is not
+being tracked, and rendering it as a solid rectangle of fog would be an alarming
+way to say so. One discovered tile switches it on.
+
+`RENDER_VERSION` did not move for any of this. Every pixel the terrain renderer
+produces is bit-identical to what it produced before overlays existed; bumping
+it would have claimed a cache of terrain PNGs was stale when it is not. Note
+also what that version does *not* cover: a cached player PNG depends on the
+overlays as well as the palette, and overlays are mutable player state with no
+version at all. That is a reason not to cache one.
+
+---
+
 ## 30. Testing Strategy
 
 Test invariants, not whether a map "looks right".
@@ -1864,9 +1945,42 @@ Correctness and visual quality come first. Measure before adding any cache or co
 #[bench] fn bench_region_radius_32();
 ```
 
+They live in `crates/wgvb/tests/bench.rs` as `#[ignore]`d `--release` timing
+loops rather than as `#[bench]` functions, because `#[bench]` is a nightly
+feature and this workspace is pinned to stable:
+
+```sh
+cargo test --release -p wgvb --test bench -- --ignored --nocapture
+```
+
 Use `cargo bench` with `criterion` if statistical rigor is wanted; a plain
 `--release` timing loop is enough to answer the only question that matters early,
 which is whether the tile cache in section 27.6 should exist at all.
+
+**Measured, phase 7.** On an M-series laptop, one core:
+
+| measurement | tiles/s | per tile |
+|---|---|---|
+| `bench_tile` | ~127,000 | 7.9 us |
+| `bench_chunk` (32x32 fill) | ~139,000 | 7.2 us |
+| `bench_region_radius_32` | ~136,000 | 7.4 us |
+| `bench_relief` | ~114,000 | 8.8 us |
+
+Two things to read out of that. The three tile measurements agreeing within ten
+percent is the shape a pure function of its own coordinate should have: batching
+buys nothing because there was nothing shared to amortize, which is the same
+property that makes the batch API safe to parallelize.
+
+The absolute number is the other thing, and it is an honest miss. This section
+expected Rust to beat the Go design's "tens of thousands" by one to two orders
+of magnitude, and it beats it by well under one. The floor is met and the
+correctness invariants are not in question, but a tile is currently about 7.4
+microseconds of arithmetic, which for a few dozen `f64` field evaluations is
+slow enough to be worth a profile. The likely suspects are the octave ladders in
+section 9.3 and the seven elevation evaluations behind `relief` and `Tile`.
+**This has not been investigated.** It is recorded here so that the next person
+to open the profiler starts from a number rather than from a feeling, and so
+that the expectation above is not left standing unqualified.
 
 ---
 

@@ -45,6 +45,26 @@ const STOPS: [(f64, [u8; 3]); 11] = [
 /// The color of a pixel that belongs to no tile in the viewport.
 pub const BACKGROUND: [u8; 4] = [24, 24, 28, 255];
 
+/// The color of a tile the player has not seen.
+///
+/// Darker than [`BACKGROUND`] and neutral, so unexplored ground reads as
+/// *unknown* rather than as a terrain — a fog that looked like deep water would
+/// be worse than no fog at all. Changing it changes rendered output and so
+/// requires bumping [`crate::RENDER_VERSION`].
+pub const FOG: [u8; 4] = [14, 14, 16, 255];
+
+/// The color of a settlement marker.
+///
+/// Warm and fully saturated, because it has to be found against any of the
+/// twenty-seven terrain colors and against [`FOG`]. No terrain stop is near it.
+pub const SETTLEMENT: [u8; 4] = [252, 96, 32, 255];
+
+/// The color of the ring drawn around a settlement marker.
+///
+/// A marker on light rock or snow needs an edge or it disappears; a dark one
+/// works against both [`SETTLEMENT`] and every pale terrain.
+pub const SETTLEMENT_EDGE: [u8; 4] = [20, 12, 8, 255];
+
 /// One color per `(heat, moisture)` band pair, indexed by discriminant.
 ///
 /// Read it as a grid with the two axes it draws: rows run polar to hot, columns

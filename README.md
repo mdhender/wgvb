@@ -19,7 +19,7 @@ The world is a wrapped hexagonal address space of 3,221,127,169 tiles at a
 
 ## Status
 
-Phases 1 through 6 of `DESIGN.md` section 32 are implemented.
+Phases 1 through 7 of `DESIGN.md` section 32 are implemented.
 
 **Phase 1 — coordinates and hashing.** Canonical wrapped coordinates, the six
 pinned direction vectors and 60-degree rotation, chunk and region addressing,
@@ -111,8 +111,67 @@ The contact sheets in `docs/renders/v5` are the evidence phase 6 met its exit
 condition, alongside the measurements in `crates/wgvb/tests/terrain.rs` and
 `crates/wgvb/tests/basin.rs`.
 
-Persistence is phase 7; `DESIGN.md` is the specification and section 32 has the
-ordered phase plan.
+**Phase 7 — persistence, player rendering, and tuning.** A world lives in one
+SQLite database that holds the seed, the algorithm version, the complete
+effective configuration, and that configuration's SHA-256 fingerprint. Opening
+one runs the six gates of `DESIGN.md` section 27.5 in order, and no gate writes
+before it passes: a file that is not a WGVB database, a schema newer than the
+binary, a generator version this binary cannot reproduce, and a configuration
+that has been edited away from its fingerprint are each a distinct typed error
+rather than a world quietly regenerated under current rules.
+
+Player state — what has been seen, what has been built — is stored apart from
+generated terrain as sparse `WITHOUT ROWID` overlays keyed by `(q, r)`, and the
+two meet only at render time. The renders in `docs/renders/player` are the
+evidence phase 7 met its exit condition. See "Saving a world" below.
+
+`DESIGN.md` is the specification and section 32 has the ordered phase plan.
+
+## Saving a world
+
+`--seed` on its own renders a diagnostic picture of a world nobody has saved.
+`--db` renders a world that exists:
+
+```sh
+# Creates world.wgvb from the seed, then renders a window of it.
+cargo run --release -p wgvb-map -- \
+    --db world.wgvb --seed 81985529216486895 \
+    --q -600 --r -450 --cols 400 --rows 300 --hex-radius 3 \
+    --layer terrain --out map.png
+
+# Every later run takes the seed and the configuration from the file.
+cargo run --release -p wgvb-map -- \
+    --db world.wgvb --q 11000 --r -4500 --cols 400 --rows 300 \
+    --hex-radius 3 --layer terrain --out far.png
+```
+
+The database is authoritative for the world and the command line is
+authoritative only for the window. Creating one writes the *complete* effective
+configuration, including every value that came from a default, before anything
+is rendered; reopening never substitutes current program defaults for a missing
+stored value, and naming a `--seed` the file disagrees with is an error rather
+than a silent override.
+
+Player overlays are written by the same command and composed at render time:
+
+```sh
+cargo run --release -p wgvb-map -- \
+    --db world.wgvb --discover -600,-450 --discover-radius 40 \
+    --settle -600,-450=Ashford \
+    --q -700 --r -520 --cols 400 --rows 300 --hex-radius 3 \
+    --layer terrain --out explored.png
+```
+
+Undiscovered ground is drawn as fog; a settlement is drawn through it, because
+it is something the player built. A world that records no discoveries at all is
+one where exploration is not being tracked, so nothing is hidden. See
+`DESIGN.md` section 29.2.
+
+A tile is about 7.4 microseconds, so a 400x300 window is roughly 0.9 seconds of
+one core. There is deliberately **no tile cache**: section 27.6 asked for a
+measurement before building one, `crates/wgvb/tests/bench.rs` is that
+measurement, and section 31 records both the numbers and the fact that they are
+below what the design hoped for.
 
 ## Looking at a seed
 

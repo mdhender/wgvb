@@ -38,15 +38,35 @@
 //! render-layer concern that belongs here, but it arrives with the player state
 //! that stores it. This phase renders the unrotated absolute frame.
 
+mod overlay;
 mod palette;
 
 use hexx::{Hex, HexLayout, HexOrientation, OffsetHexMode, Vec2};
 use wgvb::{Component, Coord, Generator, Sample};
 
-pub use palette::{BACKGROUND, climate_color, color, terrain_color};
+pub use overlay::Overlays;
+pub use palette::{
+    BACKGROUND, FOG, SETTLEMENT, SETTLEMENT_EDGE, climate_color, color, terrain_color,
+};
 
 /// Palette and symbol-rule version. Cached or golden-compared rendered output
 /// is invalid across a change to this value.
+///
+/// # History
+///
+/// - **1** — the diagnostic ramp, the climate table, and the terrain list.
+///
+/// Player overlay composition ([`render_player`]) did **not** move this. The
+/// version exists to invalidate rendered output, and every pixel [`render`]
+/// produces is bit-identical to what it produced before overlays existed: the
+/// fog and marker colors are new rules that no previous output was drawn under.
+/// Bumping it would have claimed a cache of terrain PNGs was stale when it is
+/// not.
+///
+/// Note what this value does *not* cover. A cached player PNG depends on the
+/// overlays as well as on the palette, and overlays are mutable player state
+/// with no version at all. That is a reason not to cache one, and nothing here
+/// does.
 pub const RENDER_VERSION: u32 = 1;
 
 /// Largest image this crate will produce, in pixels.
@@ -669,6 +689,18 @@ impl Image {
         &self.rgba
     }
 
+    /// Paints one pixel, ignoring a position outside the image.
+    ///
+    /// Private: an [`Image`] is a render result, and a caller that could paint
+    /// into one could produce an image no viewport and no world explains.
+    fn set_pixel(&mut self, x: u32, y: u32, color: [u8; 4]) {
+        if x >= self.width || y >= self.height {
+            return;
+        }
+        let start = (y as usize * self.width as usize + x as usize) * 4;
+        self.rgba[start..start + 4].copy_from_slice(&color);
+    }
+
     /// One pixel, or `None` outside the image.
     #[must_use]
     pub fn pixel(&self, x: u32, y: u32) -> Option<[u8; 4]> {
@@ -699,12 +731,54 @@ impl Image {
 /// reads no pixel at all.
 #[must_use]
 pub fn render(generator: &Generator, viewport: &Viewport, layer: Layer) -> Image {
+    render_player(generator, viewport, layer, &Overlays::none())
+}
+
+/// Renders one layer of a viewport with the player's overlays composed over it.
+///
+/// The two halves stay separate right up to this function, which is the point
+/// of section 27.6: terrain is generated from the seed and the configuration
+/// and knows nothing about a player, overlays are authoritative player state
+/// and know nothing about terrain, and the composition happens here, in pixels,
+/// at render time. Nothing composed here can reach back into generation.
+///
+/// Two rules, and they differ on purpose:
+///
+/// - **Fog hides terrain.** An undiscovered tile is drawn as [`FOG`] rather
+///   than as what is there. This applies only when the player is tracking
+///   discoveries at all; see [`Overlays::fog_of_war`].
+/// - **Fog does not hide the player's own marks.** A settlement is something
+///   the player built, so its marker is drawn whether or not the tile beneath
+///   it is discovered. Hiding it would be the map lying to its owner.
+///
+/// Markers are drawn after every tile and in coordinate order, so overlapping
+/// markers resolve identically on every run.
+#[must_use]
+pub fn render_player(
+    generator: &Generator,
+    viewport: &Viewport,
+    layer: Layer,
+    overlays: &Overlays,
+) -> Image {
     let (cols, rows) = viewport.tile_counts();
     let mut colors = vec![BACKGROUND; cols as usize * rows as usize];
+    let mut markers: Vec<(Coord, u32, u32)> = Vec::new();
     for col in 0..cols {
         for row in 0..rows {
-            let pixel = layer.color_at(generator, viewport.coord_at(col, row));
+            let coord = viewport.coord_at(col, row);
+            let pixel = if overlays.is_visible(coord) {
+                layer.color_at(generator, coord)
+            } else {
+                // The generator is not consulted for a tile the player cannot
+                // see. That is a saving, but it is not why: a fogged tile must
+                // look the same whatever is under it, and the cheapest way to
+                // be sure of that is to never ask.
+                FOG
+            };
             colors[col as usize * rows as usize + row as usize] = pixel;
+            if overlays.settlement_at(coord).is_some() {
+                markers.push((coord, col, row));
+            }
         }
     }
 
@@ -721,10 +795,70 @@ pub fn render(generator: &Generator, viewport: &Viewport, layer: Layer) -> Image
         }
     }
 
-    Image {
+    let mut image = Image {
         width,
         height,
         rgba,
+    };
+
+    // Coordinate order, not traversal order. A wrapped viewport can show one
+    // tile in two cells, so the cell is part of the key and the sort is total.
+    markers.sort_unstable();
+    let half = marker_half_extent(viewport.hex_radius());
+    for (_, col, row) in markers {
+        draw_marker(&mut image, viewport.center_pixel(col, row), half);
+    }
+
+    image
+}
+
+/// Half the width of a settlement marker, in pixels.
+///
+/// Scaled from the hex radius so a marker reads as a mark on a tile at any zoom
+/// rather than swallowing the tile at one and vanishing at another. Floored at
+/// one pixel, because a marker that rounds to zero is a settlement that is not
+/// on the map.
+fn marker_half_extent(hex_radius: f32) -> u32 {
+    let scaled = hex_radius * 0.40;
+    if scaled <= 1.0 {
+        return 1;
+    }
+    if scaled >= 32.0 {
+        return 32;
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "bounded to (1.0, 32.0) on the two lines above"
+    )]
+    let extent = scaled as u32;
+    extent
+}
+
+/// Draws one settlement marker: a filled square inside a one-pixel ring.
+///
+/// A square rather than anything nicer because it survives a three-pixel hex,
+/// and a ring because the fill has to be findable against pale rock and snow as
+/// well as against water. Clipped to the image rather than assumed to fit: a
+/// tile at the edge of a viewport has its center pixel inside the image but not
+/// its marker.
+fn draw_marker(image: &mut Image, center: (u32, u32), half: u32) {
+    let (cx, cy) = center;
+    let outer = half + 1;
+    for dy in -i32_of(outer)..=i32_of(outer) {
+        for dx in -i32_of(outer)..=i32_of(outer) {
+            let x = i32_of(cx) + dx;
+            let y = i32_of(cy) + dy;
+            if x < 0 || y < 0 {
+                continue;
+            }
+            let color = if dx.abs() <= i32_of(half) && dy.abs() <= i32_of(half) {
+                SETTLEMENT
+            } else {
+                SETTLEMENT_EDGE
+            };
+            image.set_pixel(u32_of(x), u32_of(y), color);
+        }
     }
 }
 

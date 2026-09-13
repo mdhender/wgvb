@@ -8,10 +8,18 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
+# `sha2` and `ciborium` are the fingerprint (DESIGN.md section 21.2), and they
+# live here rather than in `wgvb` on purpose. Appendix B holds the core crate to
+# exactly `serde` and `thiserror`, and a fingerprint is a property of a stored
+# world rather than of a generated tile: nothing in the generation path reads
+# it. The core crate defines what a configuration *is*; this crate defines what
+# one weighs on disk.
 [dependencies]
 wgvb.workspace = true
 thiserror.workspace = true
 rusqlite.workspace = true
+sha2.workspace = true
+ciborium.workspace = true
 
 [lints]
 workspace = true
