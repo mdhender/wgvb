@@ -94,6 +94,9 @@ pub fn to_hex(q: Component, r: Component) -> Hex {
 ///
 /// Only the fields that exist at this phase appear here. Temperature, moisture,
 /// relief, climate, and terrain arrive with the phases that generate them.
+///
+/// Every layer reads one scalar out of a [`Sample`], which is what keeps the
+/// renderer from needing a second traversal of the world per layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Layer {
     Continentalness,
@@ -101,16 +104,26 @@ pub enum Layer {
     Local,
     Detail,
     ElevationRaw,
+    /// The blended regional elevation bias of `DESIGN.md` sections 11 and 12 —
+    /// the "region influence" layer of section 29.
+    ///
+    /// This is the layer the phase 3 exit condition is read off. Two things to
+    /// look for: distant areas that plainly differ from one another, and *no*
+    /// lattice. Anchors sit every 128 and every 512 hexes, so a blend that had
+    /// gone wrong would draw a grid of parallelograms at those spacings, which
+    /// is unmistakable at a small hex radius over a wide window.
+    RegionInfluence,
 }
 
 impl Layer {
     /// Every layer, in the order the command line lists them.
-    pub const ALL: [Layer; 5] = [
+    pub const ALL: [Layer; 6] = [
         Layer::Continentalness,
         Layer::Regional,
         Layer::Local,
         Layer::Detail,
         Layer::ElevationRaw,
+        Layer::RegionInfluence,
     ];
 
     /// The layer's command-line name.
@@ -122,6 +135,7 @@ impl Layer {
             Layer::Local => "local",
             Layer::Detail => "detail",
             Layer::ElevationRaw => "elevation-raw",
+            Layer::RegionInfluence => "region-influence",
         }
     }
 
@@ -148,6 +162,7 @@ impl Layer {
             Layer::Local => sample.local,
             Layer::Detail => sample.detail,
             Layer::ElevationRaw => sample.elevation_raw,
+            Layer::RegionInfluence => sample.regional_uplift,
         }
     }
 }

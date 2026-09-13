@@ -18,6 +18,7 @@ mod field;
 mod generator;
 mod hash;
 mod noise;
+mod region;
 mod tile;
 
 pub use config::{Config, ConfigError, MAX_FBM_OCTAVES};
@@ -30,6 +31,7 @@ pub use hash::{
     DOM_TERRAIN_DETAIL, DOM_VOLCANIC, DOM_WARP_X, DOM_WARP_Y, domain, hash_n, hash2, hash3,
     signed_unit_f64, unit_f64,
 };
+pub use region::{RegionParams, UnitVec2};
 pub use tile::{Climate, Elevation, HeatBand, MoistureBand, Terrain, Tile};
 
 /// Generator algorithm version.
@@ -94,6 +96,7 @@ const _: () = {
     assert_send_sync::<Generator>();
     assert_send_sync::<Config>();
     assert_send_sync::<Tile>();
+    assert_send_sync::<RegionParams>();
     assert_send_sync::<Coord>();
 };
 

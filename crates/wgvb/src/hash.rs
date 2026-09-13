@@ -157,6 +157,34 @@ pub const fn signed_unit_f64(h: u64) -> f64 {
     unit_f64(h) * 2.0 - 1.0
 }
 
+/// `2^-32`, the exact scale for the 32-bit halves of a hash.
+const SCALE_32: f64 = 1.0 / 4_294_967_296.0;
+
+/// Splits one hash into two signed unit values in `[-1, +1)`.
+///
+/// Takes the two 32-bit halves and scales each by an exact power of two, so the
+/// conversion is bit-identical on every target. Never
+/// `h as f64 / u64::MAX as f64`, which is a rounded division by a value `f64`
+/// cannot represent.
+///
+/// Two values from one hash rather than two hashes, because both callers —
+/// noise gradients and region ridge orientations — want a *point*, and drawing
+/// its components from one mixed value costs one mix instead of two.
+#[inline]
+pub(crate) fn signed_pair(h: u64) -> (f64, f64) {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the truncation to u32 is the intended low-half extraction"
+    )]
+    let low = h as u32;
+    // The high half needs no truncation: `h >> 32` already fits in 32 bits.
+    let high = u32::try_from(h >> 32).expect("a 64-bit value shifted right 32 fits in u32");
+    (
+        f64::from(high) * SCALE_32 * 2.0 - 1.0,
+        f64::from(low) * SCALE_32 * 2.0 - 1.0,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

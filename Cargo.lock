@@ -578,7 +578,7 @@ dependencies = [
 
 [[package]]
 name = "wgvb"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ciborium",
  "serde",
@@ -587,7 +587,7 @@ dependencies = [
 
 [[package]]
 name = "wgvb-map"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "clap",
  "png",
@@ -598,7 +598,7 @@ dependencies = [
 
 [[package]]
 name = "wgvb-render"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hexx",
  "png",
@@ -608,7 +608,7 @@ dependencies = [
 
 [[package]]
 name = "wgvb-store"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "rusqlite",
  "thiserror",

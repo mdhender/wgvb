@@ -649,6 +649,10 @@ value = w00*region00 + w10*region10 + w01*region01 + w11*region11
 
 For hex-oriented or Voronoi-inspired schemes, blending may use another fixed local neighborhood.
 
+WGVB takes the hex-oriented option, because the four-corner form makes an artifact that is easy to miss in a unit test and obvious in a wide render. The axial basis vectors are 60 degrees apart and equal in length, so anchors at `(i * size, j * size)` form a *triangular* lattice in world space and each cell is two equilateral triangles. Interpolating bilinearly across the cell privileges the cell's long diagonal, and a field built that way draws the lattice as rows of aligned lozenges. Interpolating across the containing triangle has no preferred diagonal and carries the lattice's own six-fold symmetry.
+
+Barycentric coordinates on that triangle are already a partition of unity. Squaring each and renormalizing keeps the sum at one and makes a corner's weight and its first derivative vanish as the corner leaves the neighborhood, so a triangle edge — and a cell boundary, which is one — is a smooth join rather than a crease. Cubing joins smoothly too and looks worse: each anchor acquires a plateau and the plateaus meet along the hexagonal boundaries of the lattice's Voronoi cells, which is the lattice made visible by another route.
+
 > Crossing a chunk or region boundary must not introduce a discontinuity merely because the addressing region changed.
 
 ---
@@ -672,9 +676,28 @@ pub struct RegionParams {
 `(cos, sin)`, not as an angle in radians, so that no trigonometric function
 appears in the generation path. See section 25.2. Derive the vector by hashing
 two values and normalizing, or by hashing a point and rejecting until it lands in
-the unit disc — both use only multiply, add, and `sqrt`.
+the unit disc — both use only multiply, add, and `sqrt`. The implementation names
+the field `ridge` for that reason: a field called `ridge_angle` holding a vector
+invites someone to put an angle in it.
+
+A ridge orientation is a **line, not an arrow**: `v` and `-v` name the same
+orientation, and consumers must take `|dot|` rather than `dot`. This is not a
+detail — orientations cannot be averaged as vectors. Two anchors whose ridges run
+the same way but hashed to opposite arrows would blend to nothing, and a tile
+between them would get an orientation unrelated to either. Blend the doubled-angle
+form `(x^2 - y^2, 2xy)` instead, in which `v` and `-v` are identical, and recover
+the orientation with the half-angle identities `cos t = sqrt((1 + cos 2t) / 2)`
+and `sin t = sqrt((1 - cos 2t) / 2)`, taking the sign of `sin t` from `sin 2t`.
+Every step of that is multiply, add, divide, and `sqrt`. Where the blended
+doubled-angle vector cancels to nothing — two anchor ridges at right angles — no
+orientation exists; fall back deterministically, as the noise gradients do.
 
 When generating a tile, evaluate the nearest relevant anchors and smoothly interpolate their contribution.
+
+Region parameters are normalized *biases* in `[-1, +1]`, not quantities. How much
+uplift an elevation bias is worth, or how many degrees a heat bias moves a tile,
+belongs to the phase that consumes it — which is what lets elevation, climate,
+and terrain be tuned independently without redefining what a region is.
 
 ---
 

@@ -37,7 +37,7 @@
 //! cross-target reproducibility achievable (section 25.1).
 
 use crate::Seed;
-use crate::hash::{hash2, hash3};
+use crate::hash::{hash2, hash3, signed_pair};
 
 /// Largest lattice magnitude a sample position may resolve to, `2^53`.
 ///
@@ -47,9 +47,6 @@ use crate::hash::{hash2, hash3};
 /// site over a silent saturating cast, and the canonical world reaches only
 /// about `4e5` miles, so no real sample comes close.
 const LATTICE_LIMIT: f64 = 9_007_199_254_740_992.0;
-
-/// `2^-32`, the exact scale for the 32-bit halves of a hash.
-const SCALE_32: f64 = 1.0 / 4_294_967_296.0;
 
 /// Skew factor onto the simplex lattice, `(sqrt(3) - 1) / 2`.
 const F2: f64 = 0.5 * (crate::SQRT_3 - 1.0);
@@ -113,27 +110,6 @@ fn fade(t: f64) -> f64 {
 #[inline]
 fn lerp(a: f64, b: f64, t: f64) -> f64 {
     a + t * (b - a)
-}
-
-/// Splits a hash into two signed unit values in `[-1, +1)`.
-///
-/// Takes the two 32-bit halves and scales each by an exact power of two, so the
-/// conversion is bit-identical on every target. Never
-/// `h as f64 / u64::MAX as f64`, which is a rounded division by a value `f64`
-/// cannot represent.
-#[inline]
-fn signed_pair(h: u64) -> (f64, f64) {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the truncation to u32 is the intended low-half extraction"
-    )]
-    let low = h as u32;
-    // The high half needs no truncation: `h >> 32` already fits in 32 bits.
-    let high = u32::try_from(h >> 32).expect("a 64-bit value shifted right 32 fits in u32");
-    (
-        f64::from(high) * SCALE_32 * 2.0 - 1.0,
-        f64::from(low) * SCALE_32 * 2.0 - 1.0,
-    )
 }
 
 /// The unit gradient at simplex lattice point `(i, j)`.

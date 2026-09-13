@@ -16,7 +16,8 @@
 //! guarantees canonical input.
 
 use crate::field::Fields;
-use crate::{Config, ConfigError, Coord, Seed, Vec2, axial_to_world};
+use crate::region::{self, Param};
+use crate::{Config, ConfigError, Coord, RegionParams, Seed, Vec2, axial_to_world};
 
 /// The continuous scalar fields at one coordinate.
 ///
@@ -48,6 +49,22 @@ pub struct Sample {
     /// read as coastlines; this is the unshaped composite the tuning renderer
     /// draws in the meantime.
     pub elevation_raw: f64,
+
+    /// The blended regional elevation bias of `DESIGN.md` sections 11 and 12,
+    /// in `[-1, +1]`.
+    ///
+    /// **Not folded into [`Sample::elevation_raw`] yet.** Regions bias fields;
+    /// deciding how much uplift a bias is worth is elevation's job, and
+    /// elevation arrives in phase 4. Carrying the bias separately here means
+    /// the tuning renderer can show the region field on its own — which is how
+    /// "no visible implementation-region boundaries" is actually checked —
+    /// without phase 3 quietly moving every elevation value in the golden
+    /// table.
+    ///
+    /// [`Generator::region_params`] returns this alongside the climate,
+    /// roughness, basin, volcanic, variation, and ridge parameters that phases
+    /// 5 and 6 consume.
+    pub regional_uplift: f64,
 }
 
 /// An immutable, thread-safe world generator.
@@ -145,7 +162,24 @@ impl Generator {
             local,
             detail,
             elevation_raw: total / weight,
+            regional_uplift: region::scalar(self.seed, config, coord, Param::ElevationBias),
         }
+    }
+
+    /// The deterministic region parameters at one canonical coordinate.
+    ///
+    /// Blended across the anchors around the tile at each level, so there is no
+    /// addressing cell a tile belongs to wholesale and no boundary to see. See
+    /// `DESIGN.md` sections 11.2 and 33.4.
+    ///
+    /// Nothing is stored and nothing is cached: this is a pure function of the
+    /// seed, the coordinate, [`crate::ALGORITHM_VERSION`], and the
+    /// configuration, so concurrent callers see identical values and repeated
+    /// calls cost what they cost. Section 26 asks for a profile before a cache,
+    /// and a cache would have to live outside this type.
+    #[must_use]
+    pub fn region_params(&self, coord: Coord) -> RegionParams {
+        region::params(self.seed, &self.config, coord)
     }
 }
 
@@ -218,6 +252,11 @@ mod tests {
                 second.elevation_raw.to_bits(),
                 "{c:?}"
             );
+            assert_eq!(
+                first.regional_uplift.to_bits(),
+                second.regional_uplift.to_bits(),
+                "{c:?}"
+            );
         }
     }
 
@@ -232,6 +271,7 @@ mod tests {
                 ("local", s.local),
                 ("detail", s.detail),
                 ("elevation_raw", s.elevation_raw),
+                ("regional_uplift", s.regional_uplift),
             ] {
                 assert!(value.is_finite(), "{name} at {c:?} is {value}");
                 assert!((-1.0..=1.0).contains(&value), "{name} at {c:?} is {value}");

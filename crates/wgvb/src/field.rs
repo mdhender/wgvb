@@ -192,8 +192,11 @@ impl Field {
 /// amplitude already exhausted — and zero is the only value that keeps the
 /// documented range without introducing a not-a-number into the generation
 /// path.
+///
+/// Shared with region blending, which divides a weighted level sum by the same
+/// kind of total.
 #[inline]
-fn normalize(total: f64, weight: f64) -> f64 {
+pub(crate) fn normalize(total: f64, weight: f64) -> f64 {
     if weight > 0.0 { total / weight } else { 0.0 }
 }
 

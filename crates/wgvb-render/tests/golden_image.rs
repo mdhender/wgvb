@@ -19,6 +19,14 @@
 //! rounded. Boundary behavior is covered by the unit tests in `wgvb-render`,
 //! which check that every pixel is attributed to exactly one tile.
 //!
+//! # The region-influence row
+//!
+//! Its twenty pixels differ from one another by a single palette step, because
+//! a five-by-four window is twenty tiles out of a 128-hex region: the layer is
+//! *supposed* to be almost flat at this scale, and a window where it was not
+//! would mean the blend had collapsed toward per-tile noise. What the row pins
+//! is that the near-flat value is the recorded one.
+//!
 //! # If these values move
 //!
 //! Rendered output changed. Either bump `RENDER_VERSION` and re-record
@@ -42,7 +50,7 @@ const GOLDEN_SIZE: (u32, u32) = (48, 47);
 /// Tile-center colors, in ascending `(col, row)` order — the same order the
 /// renderer walks the viewport in.
 #[rustfmt::skip]
-const GOLDEN: [(Layer, [[u8; 4]; 20]); 5] = [
+const GOLDEN: [(Layer, [[u8; 4]; 20]); 6] = [
     // continentalness
     (Layer::Continentalness, [
         [36, 96, 158, 255], [36, 94, 156, 255], [35, 93, 155, 255], [34, 92, 154, 255],
@@ -82,6 +90,14 @@ const GOLDEN: [(Layer, [[u8; 4]; 20]); 5] = [
         [53, 123, 181, 255], [53, 123, 181, 255], [53, 123, 182, 255], [53, 124, 182, 255],
         [53, 123, 182, 255], [54, 124, 182, 255], [54, 124, 183, 255], [52, 121, 180, 255],
         [53, 124, 182, 255], [55, 127, 185, 255], [52, 121, 180, 255], [53, 124, 182, 255],
+    ]),
+    // region-influence
+    (Layer::RegionInfluence, [
+        [42, 105, 166, 255], [42, 105, 166, 255], [42, 105, 166, 255], [42, 105, 166, 255],
+        [42, 104, 165, 255], [42, 104, 165, 255], [42, 105, 165, 255], [42, 105, 166, 255],
+        [41, 104, 165, 255], [42, 104, 165, 255], [42, 104, 165, 255], [42, 104, 165, 255],
+        [41, 104, 165, 255], [41, 104, 165, 255], [41, 104, 165, 255], [41, 104, 165, 255],
+        [41, 103, 164, 255], [41, 103, 164, 255], [41, 104, 165, 255], [41, 104, 165, 255],
     ]),
 ];
 

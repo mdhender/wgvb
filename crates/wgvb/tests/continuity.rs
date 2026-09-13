@@ -9,19 +9,28 @@
 //! compare the step across a boundary against the steps everywhere else on the
 //! same line, so a field that is simply rough everywhere still passes and a
 //! field with a seam at a cell edge still fails.
+//!
+//! Two different kinds of scalar are measured, and the distinction matters when
+//! one of these tests fails. The four noise fields and the composite never read
+//! an addressing index at all, so for them a seam would mean something had
+//! leaked in that has no business being there. `regional_uplift` *is* addressed
+//! by region: it is blended across the anchors around a tile, and it is the
+//! scalar section 30.5 is really about. A seam there would mean the blend had
+//! degenerated into the hard region boundary section 33.4 forbids.
 
 use wgvb::{Config, Coord, Generator, Sample};
 
 const SEED: u64 = 0x00c0_ffee_0bad_f00d;
 
 /// Every scalar a [`Sample`] carries, named, in a fixed order.
-fn scalars(s: &Sample) -> [(&'static str, f64); 5] {
+fn scalars(s: &Sample) -> [(&'static str, f64); 6] {
     [
         ("continentalness", s.continentalness),
         ("regional", s.regional),
         ("local", s.local),
         ("detail", s.detail),
         ("elevation_raw", s.elevation_raw),
+        ("regional_uplift", s.regional_uplift),
     ]
 }
 
@@ -70,8 +79,8 @@ fn steps_along_a_line(
     along_q: bool,
     fixed: i64,
     span: i64,
-) -> [Steps; 5] {
-    let mut steps = [Steps::default(); 5];
+) -> [Steps; 6] {
+    let mut steps = [Steps::default(); 6];
     let mut previous: Option<Sample> = None;
 
     for step in -span..=span {
@@ -100,14 +109,18 @@ fn steps_along_a_line(
 
 /// How much larger a boundary step may be than the steps around it.
 ///
-/// A genuine seam is not a near miss. Sampling is a pure function of world
-/// position, and nothing in the sample path reads a chunk or region index at
-/// all, so if addressing ever did leak in, the two sides of the boundary would
-/// be uncorrelated and the step would be a large fraction of the `[-1, +1]`
-/// range — two orders of magnitude above the roughly `0.01` a six-mile step
-/// produces. The factor below sits far from both, so the test cannot fail
-/// because one boundary step happened to be the largest on the line, and cannot
-/// pass if addressing leaks.
+/// A genuine seam is not a near miss. Either side of a hard boundary would be
+/// uncorrelated with the other, so the step would be a large fraction of the
+/// `[-1, +1]` range — two orders of magnitude above the roughly `0.01` a
+/// six-mile step produces. The factor below sits far from both, so the test
+/// cannot fail because one boundary step happened to be the largest on the
+/// line, and cannot pass if a boundary is real.
+///
+/// For `regional_uplift` the margin is far wider than it needs to be: the
+/// quintic interpolant flattens the blend at an anchor line, so its boundary
+/// steps are the *smallest* on the line rather than merely comparable. The unit
+/// tests in `region.rs` assert that stronger property directly, without a
+/// factor at all.
 const SEAM_FACTOR: f64 = 2.0;
 
 /// Asserts that no cell boundary is a special place on the line.

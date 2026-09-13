@@ -19,7 +19,7 @@ The world is a wrapped hexagonal address space of 3,221,127,169 tiles at a
 
 ## Status
 
-Phases 1 and 2 of `DESIGN.md` section 32 are implemented.
+Phases 1 through 3 of `DESIGN.md` section 32 are implemented.
 
 **Phase 1 — coordinates and hashing.** Canonical wrapped coordinates, the six
 pinned direction vectors and 60-degree rotation, chunk and region addressing,
@@ -39,14 +39,25 @@ cargo run --release -p wgvb-map -- \
     --hex-radius 3 --layer elevation-raw --out map.png
 ```
 
-Layers available now are `continentalness`, `regional`, `local`, `detail`, and
-`elevation-raw`. Output is diagnostic: it is driven by an in-memory generator
-and does not represent a saved world, and `elevation-raw` is the unshaped
-multi-scale composite rather than the elevation of a `Tile`.
+**Phase 3 — hierarchical region influence.** `Generator::region_params` gives
+any coordinate a deterministic elevation, moisture, heat, roughness, basin,
+volcanic, and variation bias plus a ridge orientation, derived by hashing anchor
+addresses and blended across the anchors of a macro-region and a region level.
+Nothing is stored and nothing is cached. The blend follows the triangular anchor
+lattice rather than the parallelogram addressing cell, so distant areas have
+distinct character with no visible lattice — draw `--layer region-influence`
+over a wide window to see it. Regions bias fields; they do not assign terrain,
+and phase 4 decides what the elevation bias is worth.
 
-Terrain classification is not implemented. Regional character is phase 3,
-elevation phase 4, climate phase 5, terrain phase 6, and persistence phase 7;
-`DESIGN.md` is the specification and section 32 has the ordered phase plan.
+Layers available now are `continentalness`, `regional`, `local`, `detail`,
+`elevation-raw`, and `region-influence`. Output is diagnostic: it is driven by
+an in-memory generator and does not represent a saved world, and
+`elevation-raw` is the unshaped multi-scale composite rather than the elevation
+of a `Tile` — the region bias is not folded into it until phase 4.
+
+Terrain classification is not implemented. Elevation is phase 4, climate phase
+5, terrain phase 6, and persistence phase 7; `DESIGN.md` is the specification
+and section 32 has the ordered phase plan.
 
 Continuous fields are not yet periodic across the wrapped edges. That is an
 accepted world-warp seam under section 7.1, documented and measured in

@@ -94,13 +94,27 @@ pub struct Config {
     /// Weight of the finest terrain detail in the multi-scale composite.
     pub detail_weight: f64,
 
-    /// Macro-region edge, in hexes.
+    /// Macro-region anchor spacing, in hexes.
     pub macro_region_size_hexes: u32,
-    /// Region edge, in hexes.
+    /// Region anchor spacing, in hexes.
     pub region_size_hexes: u32,
     /// Chunk edge, in hexes. Chunks serve callers and caches; they do not
-    /// define geography.
+    /// define geography, and they are deliberately not an anchored level of the
+    /// region hierarchy.
     pub chunk_size_hexes: u32,
+
+    /// Weight of the macro-region level in the combined region parameters of
+    /// `DESIGN.md` section 11. Relative to [`Config::region_influence`], not
+    /// absolute: the combination divides by the total.
+    ///
+    /// Named `influence` rather than `weight` because
+    /// [`Config::regional_weight`] already names something else entirely — the
+    /// share of the *noise* field at regional wavelength in the elevation
+    /// composite. The two are independent knobs and a reader must not have to
+    /// guess which is which.
+    pub macro_region_influence: f64,
+    /// Weight of the region level in the combined region parameters.
+    pub region_influence: f64,
 }
 
 impl Default for Config {
@@ -145,6 +159,12 @@ impl Default for Config {
             macro_region_size_hexes: DEFAULT_MACRO_REGION_SIZE_HEXES,
             region_size_hexes: DEFAULT_REGION_SIZE_HEXES,
             chunk_size_hexes: DEFAULT_CHUNK_SIZE_HEXES,
+
+            // The same halving ladder as the composite weights, and for the
+            // same reason: the coarser level sets the character of a continent
+            // and the finer one varies it, rather than the two competing.
+            macro_region_influence: 1.0,
+            region_influence: 0.5,
         }
     }
 }
@@ -192,6 +212,9 @@ impl Config {
         positive_size("macro_region_size_hexes", self.macro_region_size_hexes)?;
         positive_size("region_size_hexes", self.region_size_hexes)?;
         positive_size("chunk_size_hexes", self.chunk_size_hexes)?;
+
+        positive("macro_region_influence", self.macro_region_influence)?;
+        positive("region_influence", self.region_influence)?;
 
         Ok(())
     }
@@ -330,6 +353,10 @@ mod tests {
             ("detail_weight", |c, v| c.detail_weight = v),
             ("fbm_lacunarity", |c, v| c.fbm_lacunarity = v),
             ("fbm_gain", |c, v| c.fbm_gain = v),
+            ("macro_region_influence", |c, v| {
+                c.macro_region_influence = v
+            }),
+            ("region_influence", |c, v| c.region_influence = v),
         ]
     }
 
@@ -364,6 +391,8 @@ mod tests {
             "local_weight",
             "detail_weight",
             "fbm_gain",
+            "macro_region_influence",
+            "region_influence",
         ] {
             for bad in [0.0, -0.0, -1.0] {
                 let mut c = Config::default();
