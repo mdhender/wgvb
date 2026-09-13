@@ -547,6 +547,9 @@ mod tests {
         for sea_level in [-0.1, -0.05, 0.0, 0.1, 0.17] {
             let config = Config {
                 sea_level,
+                // Keep the rung below sea level under it; see the same move in
+                // `config.rs`.
+                ocean_level: (Config::default().deep_water_level + sea_level) * 0.5,
                 ..Config::default()
             };
             assert_eq!(config.validate(), Ok(()));

@@ -28,14 +28,26 @@
 //! blend had collapsed toward per-tile noise. What those rows pin is that the
 //! near-flat value is the recorded one.
 //!
-//! `temperature` and `moisture` are flatter still — a palette step or two
-//! across the window — and `climate` is one solid color, because twenty tiles
-//! is twenty tiles out of a zone two thousand hexes across. That is the phase 5
+//! `basin` and `volcanic` are near-flat for the same reason `roughness` is:
+//! the shortest field either of them reads is forty hexes and the coarsest is
+//! six hundred, so a five-by-four window is inside one basin. `temperature`
+//! and `moisture` are flatter still — a palette step or two across the
+//! window — and `climate` and `terrain` are each one solid color, because
+//! twenty tiles is twenty tiles out of a zone two thousand hexes across. That is the phase 5
 //! exit condition holding, not a defect, and a climate row that varied within
 //! this window would be the speckle the phase exists to avoid. A uniform row
 //! pins less than a varied one, and what it does pin is worth having: it fails
 //! if the band thresholds move, if either composite moves enough to cross one,
 //! or if the climate table's entry for this band changes.
+//!
+//! # The terrain row, and the second window
+//!
+//! The window above is open ocean, so its `terrain` row is twenty tiles of
+//! deep ocean and pins one palette entry. `GOLDEN_COAST` is a second window on
+//! a shore of the same world, on the terrain layer alone, and it is the one
+//! that pins the classifier: seven terrains across thirty-five tiles, covering
+//! the depth cuts, the coastal-water adjacency that overrides them, and the
+//! coast rule on the land side of the same line.
 //!
 //! # Recorded for algorithm version 3
 //!
@@ -58,8 +70,8 @@
 //! them. If the *generator* moved, the golden coordinates in `wgvb` will have
 //! failed too, and that is the more serious of the two.
 
-use wgvb::{Coord, Generator};
-use wgvb_render::{BACKGROUND, Image, Layer, Viewport, encode_png, render};
+use wgvb::{Coord, Generator, Terrain};
+use wgvb_render::{BACKGROUND, Image, Layer, Viewport, encode_png, render, terrain_color};
 
 /// The seed, window, and scale the table was recorded with.
 const GOLDEN_SEED: u64 = 0x0123_4567_89ab_cdef;
@@ -74,7 +86,7 @@ const GOLDEN_SIZE: (u32, u32) = (48, 47);
 /// Tile-center colors, in ascending `(col, row)` order — the same order the
 /// renderer walks the viewport in.
 #[rustfmt::skip]
-const GOLDEN: [(Layer, [[u8; 4]; 20]); 13] = [
+const GOLDEN: [(Layer, [[u8; 4]; 20]); 16] = [
     // continentalness
     (Layer::Continentalness, [
         [108, 175, 210, 255], [114, 180, 213, 255], [214, 202, 160, 255], [206, 196, 150, 255],
@@ -179,6 +191,61 @@ const GOLDEN: [(Layer, [[u8; 4]; 20]); 13] = [
         [228, 158, 96, 255], [228, 158, 96, 255], [228, 158, 96, 255], [228, 158, 96, 255],
         [228, 158, 96, 255], [228, 158, 96, 255], [228, 158, 96, 255], [228, 158, 96, 255],
     ]),
+    // basin
+    (Layer::Basin, [
+        [79, 149, 197, 255], [74, 145, 195, 255], [70, 141, 193, 255], [66, 137, 191, 255],
+        [74, 144, 194, 255], [70, 141, 193, 255], [68, 139, 192, 255], [66, 137, 190, 255],
+        [66, 137, 191, 255], [67, 138, 191, 255], [67, 138, 191, 255], [67, 138, 191, 255],
+        [62, 134, 189, 255], [65, 136, 190, 255], [68, 139, 192, 255], [70, 141, 193, 255],
+        [60, 131, 188, 255], [65, 136, 190, 255], [68, 139, 192, 255], [69, 140, 192, 255],
+    ]),
+    // volcanic
+    (Layer::Volcanic, [
+        [27, 81, 144, 255], [27, 81, 144, 255], [27, 80, 144, 255], [27, 80, 144, 255],
+        [27, 80, 144, 255], [27, 80, 144, 255], [27, 80, 144, 255], [27, 80, 144, 255],
+        [26, 79, 143, 255], [27, 79, 143, 255], [27, 80, 143, 255], [27, 80, 143, 255],
+        [26, 78, 142, 255], [26, 79, 143, 255], [26, 79, 143, 255], [26, 79, 143, 255],
+        [25, 77, 142, 255], [26, 78, 142, 255], [26, 78, 142, 255], [26, 78, 142, 255],
+    ]),
+    // terrain — twenty tiles of deep ocean. See `GOLDEN_COAST` for the row
+    // that pins the classifier.
+    (Layer::Terrain, [
+        [10, 34, 86, 255], [10, 34, 86, 255], [10, 34, 86, 255], [10, 34, 86, 255],
+        [10, 34, 86, 255], [10, 34, 86, 255], [10, 34, 86, 255], [10, 34, 86, 255],
+        [10, 34, 86, 255], [10, 34, 86, 255], [10, 34, 86, 255], [10, 34, 86, 255],
+        [10, 34, 86, 255], [10, 34, 86, 255], [10, 34, 86, 255], [10, 34, 86, 255],
+        [10, 34, 86, 255], [10, 34, 86, 255], [10, 34, 86, 255], [10, 34, 86, 255],
+    ]),
+];
+
+/// A second window, on the terrain layer only: a coastline.
+///
+/// The window the table above records is twenty tiles of open ocean, which is
+/// right for the scalar layers and useless for terrain — a row of one color
+/// pins the palette entry for deep ocean and nothing about the classifier that
+/// chose it. This window is seven by five tiles across a shore of the same
+/// world, and it carries seven of the twenty-seven terrains: `ocean`, `shallow
+/// sea`, `coastal water`, `coast`, `scrubland`, `badlands`, and `savanna`.
+///
+/// So it pins the rules a coastline is made of — the depth cuts, the coastal
+/// adjacency that overrides them, and the "near sea level and next to water"
+/// pair that makes a coast — rather than pinning one color twenty times.
+const GOLDEN_COAST_ORIGIN: (i64, i64) = (167, -10);
+const GOLDEN_COAST_COLS: u32 = 7;
+const GOLDEN_COAST_ROWS: u32 = 5;
+const GOLDEN_COAST_SIZE: (u32, u32) = (66, 58);
+
+#[rustfmt::skip]
+const GOLDEN_COAST: [[u8; 4]; 35] = [
+    [226, 210, 164, 255], [116, 182, 214, 255], [56, 128, 186, 255], [56, 128, 186, 255],
+    [16, 62, 128, 255], [190, 172, 112, 255], [226, 210, 164, 255], [116, 182, 214, 255],
+    [56, 128, 186, 255], [56, 128, 186, 255], [190, 172, 112, 255], [226, 210, 164, 255],
+    [116, 182, 214, 255], [56, 128, 186, 255], [56, 128, 186, 255], [190, 172, 112, 255],
+    [188, 132, 90, 255], [226, 210, 164, 255], [116, 182, 214, 255], [116, 182, 214, 255],
+    [190, 172, 112, 255], [188, 132, 90, 255], [226, 210, 164, 255], [226, 210, 164, 255],
+    [226, 210, 164, 255], [190, 172, 112, 255], [190, 172, 112, 255], [190, 172, 112, 255],
+    [212, 182, 88, 255], [212, 182, 88, 255], [190, 172, 112, 255], [190, 172, 112, 255],
+    [190, 172, 112, 255], [212, 182, 88, 255], [212, 182, 88, 255],
 ];
 
 /// Renders the golden window, encodes it, and decodes it back.
@@ -297,6 +364,90 @@ fn the_golden_table_distinguishes_the_layers() {
             );
         }
     }
+}
+
+#[test]
+fn the_coastal_window_matches_its_golden_pixels() {
+    let generator = Generator::with_defaults(GOLDEN_SEED);
+    let viewport = Viewport::new(
+        Coord::new(GOLDEN_COAST_ORIGIN.0, GOLDEN_COAST_ORIGIN.1),
+        GOLDEN_COAST_COLS,
+        GOLDEN_COAST_ROWS,
+        GOLDEN_HEX_RADIUS,
+    )
+    .expect("the coastal viewport is valid");
+    assert_eq!(viewport.image_size(), GOLDEN_COAST_SIZE);
+
+    let image = render(&generator, &viewport, Layer::Terrain);
+    let bytes = encode_png(&image).expect("encoding succeeds");
+    let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    let mut reader = decoder.read_info().expect("a readable PNG");
+    let mut buffer = vec![0_u8; reader.output_buffer_size().expect("a bounded buffer")];
+    let info = reader.next_frame(&mut buffer).expect("one frame");
+    assert_eq!(&buffer[..info.buffer_size()], image.rgba());
+
+    let mut failures = Vec::new();
+    let mut index = 0;
+    for col in 0..GOLDEN_COAST_COLS {
+        for row in 0..GOLDEN_COAST_ROWS {
+            let (x, y) = viewport.center_pixel(col, row);
+            let actual = image
+                .pixel(x, y)
+                .expect("a tile center is inside the image");
+            if actual != GOLDEN_COAST[index] {
+                failures.push(format!(
+                    "terrain tile ({col}, {row}) at pixel ({x}, {y}): expected {:?}, got {actual:?}",
+                    GOLDEN_COAST[index]
+                ));
+            }
+            index += 1;
+        }
+    }
+    assert_eq!(index, GOLDEN_COAST.len(), "the table is the wrong length");
+    assert!(
+        failures.is_empty(),
+        "{} golden pixel(s) moved. This is a render compatibility change, \
+         not a test to re-record:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn the_coastal_window_is_a_coastline_and_not_one_flat_color() {
+    // What the second window is for. If a retune moved this shore out of the
+    // window, the table above would still pass while pinning nothing, so the
+    // variety is asserted rather than assumed.
+    let mut distinct: Vec<[u8; 4]> = GOLDEN_COAST.to_vec();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert!(
+        distinct.len() >= 6,
+        "the coastal window records only {} colors",
+        distinct.len()
+    );
+
+    // Water and land both present, read through the palette rather than by
+    // eye: every recorded pixel has to be some terrain's color.
+    let mut water = 0;
+    let mut land = 0;
+    for pixel in GOLDEN_COAST {
+        let terrain = Terrain::ALL
+            .into_iter()
+            .find(|t| terrain_color(*t) == pixel)
+            .unwrap_or_else(|| panic!("{pixel:?} is not a terrain color"));
+        if terrain.is_water() {
+            water += 1;
+        } else {
+            land += 1;
+        }
+        assert!(
+            !terrain.is_inland_water(),
+            "the coastal window records {}",
+            terrain.name()
+        );
+    }
+    assert!(water >= 8 && land >= 8, "{water} water, {land} land");
 }
 
 #[test]

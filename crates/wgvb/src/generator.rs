@@ -20,12 +20,23 @@
 //! the same reason: [`Generator::sample`] and [`Generator::tile`] both need the
 //! temperature and moisture composites, and one private function is what keeps
 //! them from becoming two.
+//!
+//! Phase 6 adds basin influence, volcanic tendency, and terrain, through
+//! [`Generator::basin_scalars`] on the same terms. Terrain is the one
+//! classification that reads the *neighborhood* rather than the tile alone —
+//! it needs coastal adjacency and peak prominence, both of which come out of
+//! the six neighboring elevation scalars that relief already pays for — so
+//! [`Generator::tile`] computes that array once and hands it to
+//! [`crate::terrain::neighborhood`]. That is also why [`Generator::sample`]
+//! carries no terrain: a sample costs one elevation evaluation and terrain
+//! costs seven.
 
 use crate::field::Fields;
 use crate::relief;
+use crate::terrain::{self, Facts};
 use crate::{
-    Config, ConfigError, Coord, DIRECTION_COUNT, Elevation, RegionParams, Seed, Terrain, Tile,
-    Vec2, climate, elevation, region,
+    Config, ConfigError, Coord, DIRECTION_COUNT, RegionParams, Seed, Tile, Vec2, basin, climate,
+    elevation, region,
 };
 
 /// The continuous scalar fields at one coordinate.
@@ -85,8 +96,8 @@ pub struct Sample {
     /// on its own.
     ///
     /// [`Generator::region_params`] returns this alongside the climate,
-    /// roughness, basin, volcanic, variation, and ridge parameters that phases
-    /// 5 and 6 consume.
+    /// roughness, basin, volcanic, variation, and ridge parameters that
+    /// climate, basin influence, and terrain consume.
     pub regional_uplift: f64,
 
     /// The blended region roughness bias, in `[-1, +1]`.
@@ -122,6 +133,31 @@ pub struct Sample {
     /// It does not read elevation at all, so a mountain range that is visible
     /// here is a coincidence of the fields rather than a coupling.
     pub moisture: f64,
+
+    /// The basin influence of `DESIGN.md` section 17, in `[-1, +1]`.
+    ///
+    /// `+1` is the middle of an enclosed depression and `-1` the crown of a
+    /// rise. Bounded local sampling and nothing else: three basin fields and
+    /// the region basin bias, with no connectivity and no flood fill anywhere
+    /// in it.
+    ///
+    /// A tendency rather than a water table. It is useful where no water is
+    /// assigned at all — section 17's own example is the Great Basin — and it
+    /// is the input terrain reads when it decides whether a wet lowland is a
+    /// marsh and whether a dry one is a desert.
+    pub basin_influence: f64,
+
+    /// The volcanic tendency of `DESIGN.md` section 17, in `[-1, +1]`.
+    ///
+    /// How restless the crust is here: the belt field and the region's
+    /// volcanic bias. Not a volcano — a cone additionally needs high ground
+    /// and a local peak, which a sample does not evaluate because it does not
+    /// look at the neighbors.
+    ///
+    /// Carried for the same reason [`Sample::roughness`] is. A rendered
+    /// volcano layer beside a rendered elevation layer explains where the
+    /// cones are and, more usefully, where they are not.
+    pub volcanic: f64,
 }
 
 /// An immutable, thread-safe world generator.
@@ -199,6 +235,7 @@ impl Generator {
         let inputs = elevation::inputs(&self.fields, self.seed, &self.config, coord);
         let elevation = elevation::scalar(&self.config, &inputs);
         let (heat, moisture) = self.climate_scalars(coord, inputs.world, elevation);
+        let (basin_influence, volcanic) = self.basin_scalars(coord, inputs.world);
         Sample {
             coord,
             world: inputs.world,
@@ -213,6 +250,8 @@ impl Generator {
             elevation,
             heat,
             moisture,
+            basin_influence,
+            volcanic,
         }
     }
 
@@ -253,31 +292,49 @@ impl Generator {
     /// constructor that skips normalization, so there is nothing here to
     /// re-normalize.
     ///
-    /// # Phase 5 completeness
+    /// # What a tile costs
     ///
-    /// Elevation, relief, and climate are generated; terrain is provisional and
-    /// is documented as such on [`Tile::terrain`].
+    /// Seven elevation evaluations — the tile and its six neighbors — plus one
+    /// climate and one basin evaluation. The neighbors are sampled once and
+    /// read three times, for relief, for peak prominence, and for coastal
+    /// adjacency, because the alternative is three traversals of the same six
+    /// coordinates that must not be allowed to disagree.
     #[must_use]
     pub fn tile(&self, coord: Coord) -> Tile {
+        let world = crate::axial_to_world(coord);
         let elevation_value = self.elevation_scalar(coord);
-        let relief_value = relief::from_neighbors(
-            elevation_value,
-            &self.neighbor_elevations(coord),
-            self.config.relief_reference_delta_per_hex,
-        );
+        let neighbors = self.neighbor_elevations(coord);
+        let around = terrain::neighborhood(&self.config, elevation_value, &neighbors);
+
         let band = elevation::classify(&self.config, elevation_value);
-        let (heat_value, moisture_value) =
-            self.climate_scalars(coord, crate::axial_to_world(coord), elevation_value);
+        let (heat_value, moisture_value) = self.climate_scalars(coord, world, elevation_value);
+        let climate = climate::classify(&self.config, heat_value, moisture_value);
+        let (basin_influence, volcanic) = self.basin_scalars(coord, world);
 
         Tile {
             coord,
             elevation_value,
             heat_value,
             moisture_value,
-            relief_value,
+            relief_value: around.relief,
             elevation: band,
-            climate: climate::classify(&self.config, heat_value, moisture_value),
-            terrain: provisional_terrain(band),
+            climate,
+            terrain: terrain::classify(
+                &self.config,
+                &Facts {
+                    elevation_value,
+                    band,
+                    relief: around.relief,
+                    prominence: around.prominence,
+                    heat_value,
+                    moisture_value,
+                    climate,
+                    basin: basin_influence,
+                    volcanic,
+                    adjacent_water: around.adjacent_water,
+                    adjacent_land: around.adjacent_land,
+                },
+            ),
         }
     }
 
@@ -370,6 +427,21 @@ impl Generator {
         )
     }
 
+    /// The basin influence and volcanic tendency at one canonical coordinate.
+    ///
+    /// Private and paired for the reason [`Generator::climate_scalars`] is:
+    /// [`Generator::sample`] and [`Generator::tile`] both want both, and two
+    /// doors into two copies of a composition is how they drift apart. The
+    /// pairing also walks the region anchors once for the basin and volcanic
+    /// biases rather than once each.
+    fn basin_scalars(&self, coord: Coord, world: Vec2) -> (f64, f64) {
+        let inputs = basin::inputs(&self.fields, self.seed, &self.config, coord, world);
+        (
+            basin::influence(&self.config, &inputs),
+            basin::volcanic(&self.config, &inputs),
+        )
+    }
+
     /// The elevation scalar. The one place elevation is composed.
     ///
     /// Private on purpose. `DESIGN.md` section 18 forbids calling `tile()` from
@@ -420,27 +492,6 @@ fn region_coords(center: Coord, radius: u32) -> Vec<Coord> {
     out
 }
 
-/// A stand-in terrain for phase 4, derived from the elevation band alone.
-///
-/// **Phase 6 replaces this.** Section 17 derives terrain from elevation,
-/// relief, and climate together, and two of those are not generated yet, so
-/// nothing here can distinguish tundra from rainforest — the whole world is
-/// temperate. See [`Tile::terrain`].
-///
-/// A `match` on the band rather than a constant, so a caller sees water where
-/// there is water and the diagnostic images are readable; and a `match` rather
-/// than a lookup table, so adding a band is a compile error here.
-const fn provisional_terrain(band: Elevation) -> Terrain {
-    match band {
-        Elevation::DeepWater => Terrain::DeepOcean,
-        Elevation::ShallowWater => Terrain::ShallowSea,
-        Elevation::Lowland => Terrain::Plains,
-        Elevation::Upland => Terrain::Hills,
-        Elevation::Highland => Terrain::Mountain,
-        Elevation::Mountain => Terrain::Alpine,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -472,6 +523,7 @@ mod tests {
     fn new_accepts_a_valid_non_default_configuration() {
         let config = Config {
             sea_level: -0.1,
+            ocean_level: -0.125,
             ..Config::default()
         };
         let g = Generator::new(7, config.clone()).expect("configuration is valid");
@@ -678,23 +730,56 @@ mod tests {
     }
 
     #[test]
-    fn the_provisional_terrain_partitions_water_and_land_the_same_way_the_band_does() {
-        // Phase 6 replaces this mapping, but while it stands it must not
-        // contradict the classification it is derived from.
-        let water = [Terrain::DeepOcean, Terrain::ShallowSea];
-        for band in [
-            Elevation::DeepWater,
-            Elevation::ShallowWater,
-            Elevation::Lowland,
-            Elevation::Upland,
-            Elevation::Highland,
-            Elevation::Mountain,
-        ] {
+    fn the_terrain_and_the_elevation_band_agree_about_water() {
+        // Two classifications of one scalar against one threshold. They cannot
+        // be allowed to disagree: a caller switching on the band and drawing
+        // the terrain would put a forest in the sea.
+        let g = Generator::with_defaults(0x9999_aaaa);
+        for c in sample_coords() {
+            let tile = g.tile(c);
             assert_eq!(
-                water.contains(&provisional_terrain(band)),
-                band.is_water(),
-                "{band:?}"
+                tile.terrain.is_water(),
+                tile.elevation.is_water(),
+                "{c:?}: {:?} against {:?}",
+                tile.terrain,
+                tile.elevation
             );
+        }
+    }
+
+    #[test]
+    fn every_public_route_to_the_basin_scalars_gives_the_same_bits() {
+        // `sample` and `tile` are two doors into `basin_scalars`. The tile does
+        // not expose the two numbers, so what is checked is that the terrain it
+        // reports is the classification of the sample's basin and volcanic
+        // values rather than of a second evaluation that happened to agree.
+        let g = Generator::with_defaults(0xbbbb_cccc);
+        for c in sample_coords() {
+            let sample = g.sample(c);
+            let tile = g.tile(c);
+            let mut neighbors = [0.0_f64; DIRECTION_COUNT];
+            for (index, slot) in neighbors.iter_mut().enumerate() {
+                let direction = i32::try_from(index).expect("DIRECTION_COUNT is 6");
+                *slot = g.elevation_at(c.neighbor(direction));
+            }
+            let around = terrain::neighborhood(g.config(), tile.elevation_value, &neighbors);
+            let expected = terrain::classify(
+                g.config(),
+                &Facts {
+                    elevation_value: tile.elevation_value,
+                    band: tile.elevation,
+                    relief: around.relief,
+                    prominence: around.prominence,
+                    heat_value: tile.heat_value,
+                    moisture_value: tile.moisture_value,
+                    climate: tile.climate,
+                    basin: sample.basin_influence,
+                    volcanic: sample.volcanic,
+                    adjacent_water: around.adjacent_water,
+                    adjacent_land: around.adjacent_land,
+                },
+            );
+            assert_eq!(tile.terrain, expected, "{c:?}");
         }
     }
 

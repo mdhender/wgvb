@@ -15,13 +15,20 @@
 //! Phase 1 defined these types and nothing that assigned them. Phase 4 assigns
 //! [`Tile::elevation_value`], [`Tile::relief_value`], and [`Tile::elevation`];
 //! phase 5 assigns [`Tile::heat_value`], [`Tile::moisture_value`], and
-//! [`Tile::climate`]. [`Tile::terrain`] is still provisional and is documented
-//! as such on the field itself.
+//! [`Tile::climate`]; phase 6 assigns [`Tile::terrain`]. Every field of a
+//! [`Tile`] is now generated, and section 4.1 is satisfied in full.
 
 use crate::Coord;
 
 /// Elevation band. See `DESIGN.md` section 14.1.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+///
+/// Ordered, and the order is the ladder: the derived [`Ord`] compares
+/// discriminants, the discriminants ascend with height, and section 14.1 pins
+/// them. So `band >= Elevation::Highland` means what it reads as, and terrain
+/// classification says "highland or above" without a five-arm `matches!`.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[repr(u8)]
 pub enum Elevation {
     DeepWater = 0,
@@ -41,8 +48,8 @@ impl Elevation {
     /// two definitions together at the threshold itself, where they could
     /// otherwise drift apart unnoticed.
     ///
-    /// Inland water is not this: a lake sits on potential land and arrives in
-    /// phase 6, if it arrives at all. See [`Terrain`].
+    /// Inland water is not this: a lake would sit on potential land, and this
+    /// version does not produce one. See [`Terrain`].
     #[must_use]
     pub const fn is_water(self) -> bool {
         matches!(self, Elevation::DeepWater | Elevation::ShallowWater)
@@ -57,7 +64,12 @@ impl Elevation {
 
 /// Temperature band. Independent of [`MoistureBand`] on purpose: cold and arid
 /// are not mutually exclusive. See `DESIGN.md` section 16.1.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+///
+/// Ordered coldest first, on the same terms as [`Elevation`]: the derived
+/// [`Ord`] is discriminant order and the discriminants are the ladder.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[repr(u8)]
 pub enum HeatBand {
     Polar = 0,
@@ -94,8 +106,11 @@ impl HeatBand {
     }
 }
 
-/// Moisture band. See `DESIGN.md` section 16.1.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+/// Moisture band, ordered driest first. See `DESIGN.md` section 16.1 and the
+/// note on [`Elevation`] about what the derived [`Ord`] means.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[repr(u8)]
 pub enum MoistureBand {
     Arid = 0,
@@ -144,9 +159,16 @@ pub struct Climate {
 /// section 17; elevation, relief, and climate remain available alongside it, so
 /// no variant is needed for every combination of them.
 ///
-/// Inland water is present in the vocabulary but is emitted only when bounded
-/// local generation can give neighboring water tiles coherent membership,
-/// surface elevation, depth, and shorelines.
+/// # Inland water
+///
+/// [`Terrain::Lake`] and [`Terrain::InlandSea`] are in the vocabulary and **no
+/// world produced by this version contains either**. Section 17 allows inland
+/// water only where bounded local generation can give neighboring water tiles
+/// coherent membership, surface elevation, depth, and shorelines, and requires
+/// it to be omitted rather than approximated otherwise. The decision and its
+/// reasoning are recorded in the `terrain` module comment; the two variants
+/// keep their pinned discriminants so the version that does emit them does not
+/// have to renumber the twenty-one variants after them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[repr(u8)]
 pub enum Terrain {
@@ -189,6 +211,108 @@ pub enum Terrain {
     Coast = 26,
 }
 
+impl Terrain {
+    /// Every terrain, in discriminant order — which is the family order of
+    /// `DESIGN.md` section 17's table.
+    ///
+    /// Exists for the same reason [`HeatBand::ALL`] does: a renderer has to
+    /// draw a key, and a key built from a list kept somewhere else is a list
+    /// that can quietly lose a variant. A test asserts this list *is* the
+    /// discriminants, in order.
+    pub const ALL: [Terrain; 27] = [
+        Terrain::DeepOcean,
+        Terrain::Ocean,
+        Terrain::ShallowSea,
+        Terrain::CoastalWater,
+        Terrain::InlandSea,
+        Terrain::Lake,
+        Terrain::GlacialIce,
+        Terrain::Tundra,
+        Terrain::Marsh,
+        Terrain::Swamp,
+        Terrain::Bog,
+        Terrain::Desert,
+        Terrain::Badlands,
+        Terrain::Scrubland,
+        Terrain::Plains,
+        Terrain::Grassland,
+        Terrain::Steppe,
+        Terrain::Savanna,
+        Terrain::BorealForest,
+        Terrain::TemperateForest,
+        Terrain::Rainforest,
+        Terrain::Hills,
+        Terrain::Mountain,
+        Terrain::Alpine,
+        Terrain::Volcano,
+        Terrain::VolcanicHighland,
+        Terrain::Coast,
+    ];
+
+    /// The terrain's name, lowercase, for a legend or a command line.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Terrain::DeepOcean => "deep ocean",
+            Terrain::Ocean => "ocean",
+            Terrain::ShallowSea => "shallow sea",
+            Terrain::CoastalWater => "coastal water",
+            Terrain::InlandSea => "inland sea",
+            Terrain::Lake => "lake",
+            Terrain::GlacialIce => "glacial ice",
+            Terrain::Tundra => "tundra",
+            Terrain::Marsh => "marsh",
+            Terrain::Swamp => "swamp",
+            Terrain::Bog => "bog",
+            Terrain::Desert => "desert",
+            Terrain::Badlands => "badlands",
+            Terrain::Scrubland => "scrubland",
+            Terrain::Plains => "plains",
+            Terrain::Grassland => "grassland",
+            Terrain::Steppe => "steppe",
+            Terrain::Savanna => "savanna",
+            Terrain::BorealForest => "boreal forest",
+            Terrain::TemperateForest => "temperate forest",
+            Terrain::Rainforest => "rainforest",
+            Terrain::Hills => "hills",
+            Terrain::Mountain => "mountain",
+            Terrain::Alpine => "alpine",
+            Terrain::Volcano => "volcano",
+            Terrain::VolcanicHighland => "volcanic highland",
+            Terrain::Coast => "coast",
+        }
+    }
+
+    /// Whether this terrain is open water of any kind, ocean or inland.
+    ///
+    /// A `match` rather than a discriminant range, so a variant added to
+    /// either water family has to be placed here rather than silently counting
+    /// as land.
+    #[must_use]
+    pub const fn is_water(self) -> bool {
+        matches!(
+            self,
+            Terrain::DeepOcean
+                | Terrain::Ocean
+                | Terrain::ShallowSea
+                | Terrain::CoastalWater
+                | Terrain::InlandSea
+                | Terrain::Lake
+        )
+    }
+
+    /// Whether this terrain is inland water.
+    ///
+    /// Never true of a tile this version generates; see the note on
+    /// [`Terrain`]. It exists so that the test making that claim, and any
+    /// caller that wants to assert it too, does not have to spell out the two
+    /// variants.
+    #[must_use]
+    pub const fn is_inland_water(self) -> bool {
+        matches!(self, Terrain::InlandSea | Terrain::Lake)
+    }
+}
+
 /// One generated tile.
 ///
 /// `Copy` and under 64 bytes, so a batch API can fill a `&mut [Tile]` with no
@@ -220,17 +344,16 @@ pub struct Tile {
     /// and [`Tile::moisture_value`] against the configured ladders.
     pub climate: Climate,
 
-    /// **Provisional until phase 6.** Derived from the elevation band alone,
-    /// which is not how terrain is meant to be classified: section 17 derives
-    /// it from elevation, relief, and climate together, and all three now
-    /// exist — this field simply has not been rewritten to read them yet.
+    /// The game-facing terrain, classified from elevation, relief, climate,
+    /// basin influence, volcanic tendency, and the neighboring elevations.
     ///
-    /// The value is a plausible one rather than a placeholder constant so that
-    /// a caller reading it sees water where there is water — but it carries no
-    /// climate information at all, so there is no tundra, no desert, and no
-    /// forest anywhere in the world, however cold or dry a tile reports itself
-    /// to be. The diagnostic renderer deliberately has no terrain layer at this
-    /// phase for that reason, while it does have a climate one.
+    /// Never a per-tile draw; see the `terrain` module for the rule order and
+    /// for why no world produced by this version contains inland water.
+    ///
+    /// The other fields of this struct stay available beside it on purpose:
+    /// section 17 keeps elevation, relief, and climate in the tile so a game
+    /// can draw forested hills or a glaciated mountain without a terrain
+    /// constant for every combination.
     pub terrain: Terrain,
 }
 

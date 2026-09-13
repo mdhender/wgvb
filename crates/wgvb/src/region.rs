@@ -112,23 +112,32 @@ pub struct RegionParams {
     /// continental field alone would put it. Weighted by
     /// [`Config::uplift_weight`] into the elevation scalar.
     pub elevation_bias: f64,
-    /// Wet or dry tendency, the "wet/dry tendency" of section 11.1. Consumed by
-    /// phase 5.
+    /// Wet or dry tendency, the "wet/dry tendency" of section 11.1. The region
+    /// term of the moisture composite.
     pub moisture_bias: f64,
-    /// Warm or cool tendency, independent of moisture. Consumed by phase 5.
+    /// Warm or cool tendency, independent of moisture. The region term of the
+    /// temperature composite.
     pub heat_bias: f64,
     /// Rough or smooth tendency: how strongly local relief reads here.
     ///
     /// Elevation reads it twice — it scales the ridge structure term to zero in
     /// a smooth region, and it scales hill relief between half and full
     /// strength — so a smooth region is a gentle plain and a rough one is a
-    /// mountain belt. Phase 6 reads it again for terrain.
+    /// mountain belt. Terrain reads it a third time, through the relief that
+    /// elevation produced.
     pub roughness: f64,
-    /// Tendency toward enclosed low ground. Consumed by phase 6, which decides
-    /// whether bounded local generation can give inland water coherent
-    /// membership at all.
+    /// Tendency toward enclosed low ground.
+    ///
+    /// The region term of the basin composite in `crate::basin`, and the
+    /// heaviest region share any composite gives: a basin is mostly a fact
+    /// about a place rather than about a wavelength. It assigns no water —
+    /// this version generates none — but it is what makes one part of a
+    /// continent hold marshes and another hold salt flats.
     pub basin_bias: f64,
-    /// Volcanic tendency. Consumed by phase 6.
+    /// Volcanic tendency: how restless the crust is here.
+    ///
+    /// One of the two terms of the volcanic composite, and one of the three
+    /// conditions a volcano needs. Never a volcano on its own.
     pub volcanic: f64,
     /// Terrain variation: how mixed or uniform this place's terrain reads.
     pub variation: f64,
@@ -545,6 +554,52 @@ pub(crate) fn climate_inputs(seed: Seed, config: &Config, coord: Coord) -> Clima
     }
 }
 
+/// The two region parameters the basin and volcanic composites consume.
+///
+/// A narrowing of [`params`] on exactly the terms [`climate_inputs`] is one,
+/// and paired for the same reason the two climate biases are: `tile` wants
+/// both, and walking the anchors twice to get them would cost the anchor loop
+/// twice for no change in the answer.
+///
+/// Each quantity accumulates with the same operations in the same order as in
+/// [`params`], so the two agree bit for bit. A test asserts that, because it is
+/// a claim that decays silently if either function is edited alone.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct TerrainInputs {
+    pub(crate) basin_bias: f64,
+    pub(crate) volcanic: f64,
+}
+
+pub(crate) fn terrain_inputs(seed: Seed, config: &Config, coord: Coord) -> TerrainInputs {
+    let mut basin_bias = 0.0_f64;
+    let mut volcanic = 0.0_f64;
+    let mut weight = 0.0_f64;
+
+    // Coarse to fine, always. Section 25.3.
+    for level in LEVELS {
+        let influence = level.influence(config);
+        let (anchors, weights) = anchors_and_weights(coord, level.size_hexes(config));
+
+        for (param, total) in [
+            (Param::BasinBias, &mut basin_bias),
+            (Param::Volcanic, &mut volcanic),
+        ] {
+            let mut blended = 0.0_f64;
+            for (anchor_weight, anchor) in weights.into_iter().zip(anchors) {
+                blended += anchor_weight * anchor_scalar(seed, level, anchor, param);
+            }
+            *total += influence * blended;
+        }
+
+        weight += influence;
+    }
+
+    TerrainInputs {
+        basin_bias: normalize(basin_bias, weight),
+        volcanic: normalize(volcanic, weight),
+    }
+}
+
 /// Every region parameter at one coordinate.
 ///
 /// A pure function of the seed, the coordinate, [`crate::ALGORITHM_VERSION`],
@@ -664,6 +719,39 @@ mod tests {
             cube = (-cube.2, -cube.0, -cube.1);
         }
         out
+    }
+
+    #[test]
+    fn the_narrowed_terrain_path_agrees_with_the_full_one_bit_for_bit() {
+        // The third narrowing, on the same terms as the other two: a
+        // narrowing that computes anything differently is a second world.
+        let config = config();
+        for coord in sample_coords() {
+            let full = params(SEED, &config, coord);
+            let narrow = terrain_inputs(SEED, &config, coord);
+            assert_eq!(
+                narrow.basin_bias.to_bits(),
+                full.basin_bias.to_bits(),
+                "{coord:?}"
+            );
+            assert_eq!(
+                narrow.volcanic.to_bits(),
+                full.volcanic.to_bits(),
+                "{coord:?}"
+            );
+            // And against the one-parameter reference, so a matching pair of
+            // wrong implementations would still be caught.
+            assert_eq!(
+                narrow.basin_bias.to_bits(),
+                scalar(SEED, &config, coord, Param::BasinBias).to_bits(),
+                "{coord:?}"
+            );
+            assert_eq!(
+                narrow.volcanic.to_bits(),
+                scalar(SEED, &config, coord, Param::Volcanic).to_bits(),
+                "{coord:?}"
+            );
+        }
     }
 
     #[test]

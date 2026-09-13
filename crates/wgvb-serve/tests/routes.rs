@@ -3,8 +3,10 @@
 //! Everything here goes through [`wgvb_serve::reply`], which is a pure function
 //! of a request target, so none of it opens a socket.
 
-use wgvb::{Climate, Coord, DIRECTIONS, HeatBand, MoistureBand, WORLD_RADIUS, direction_index};
-use wgvb_render::{Layer, MAX_IMAGE_PIXELS, Viewport, climate_color, color};
+use wgvb::{
+    Climate, Coord, DIRECTIONS, HeatBand, MoistureBand, Terrain, WORLD_RADIUS, direction_index,
+};
+use wgvb_render::{Layer, MAX_IMAGE_PIXELS, Viewport, climate_color, color, terrain_color};
 use wgvb_serve::{
     COMPASS, DEFAULT_COLS, DEFAULT_HEX_RADIUS, DEFAULT_ROWS, HTML, MAX_COLS, MAX_HEX_RADIUS,
     MAX_ROWS, PNG, Reply, Route, TEXT, View, reply,
@@ -173,8 +175,8 @@ fn a_coordinate_outside_the_world_is_refused() {
 #[test]
 fn an_unknown_layer_is_refused_and_the_known_ones_are_listed() {
     assert_refused(
-        &format!("/seed/{SEED}?layer=terrain"),
-        &["terrain", "elevation-raw", "region-influence"],
+        &format!("/seed/{SEED}?layer=swamps"),
+        &["swamps", "elevation-raw", "region-influence", "terrain"],
     );
     assert_refused(&format!("/seed/{SEED}?layer="), &["layer"]);
 }
@@ -590,16 +592,51 @@ fn the_climate_layer_shows_the_two_axis_table_instead() {
 }
 
 #[test]
+fn the_terrain_layer_shows_a_named_swatch_for_every_terrain() {
+    // Terrain is neither a scale nor a grid: a rainforest is not more of
+    // anything than a desert is, and the two axes a climate table draws do not
+    // exist here. So the key is a list, and every entry has to be named —
+    // twenty-seven colors with no names is a picture of a palette.
+    let html = page("?layer=terrain");
+    assert_eq!(html.status, 200);
+    let text = html.text();
+    assert!(!text.contains("class=\"ramp\""), "terrain drew a ramp");
+    assert!(
+        !text.contains("<table class=\"key\">"),
+        "terrain drew the climate table"
+    );
+    assert!(text.contains("<ul class=\"swatches\""));
+
+    for terrain in Terrain::ALL {
+        assert!(
+            text.contains(terrain.name()),
+            "{} is missing from the key",
+            terrain.name()
+        );
+        let rgba = terrain_color(terrain);
+        assert!(
+            text.contains(&format!(
+                "background:#{:02x}{:02x}{:02x}",
+                rgba[0], rgba[1], rgba[2]
+            )),
+            "{} has no swatch",
+            terrain.name()
+        );
+    }
+}
+
+#[test]
 fn the_key_is_not_navigation() {
     // A test because it would be easy and wrong to make a swatch a link: the
     // scroll controls and the layer selector are the page's navigation, and the
     // link count above is what pins that.
-    for layer in [Layer::Elevation, Layer::Climate] {
+    for layer in [Layer::Elevation, Layer::Climate, Layer::Terrain] {
         let html = page(&format!("?layer={}", layer.name()));
         let text = html.text();
         let key_start = text
             .find("class=\"legend\"")
             .or_else(|| text.find("<table class=\"key\">"))
+            .or_else(|| text.find("<ul class=\"swatches\""))
             .expect("the page carries a key");
         let key = &text[key_start..];
         let key_end = key.find("<dl").expect("the readout follows the key");

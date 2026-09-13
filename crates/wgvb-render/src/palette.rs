@@ -9,13 +9,16 @@
 //! is the shape a reader already knows how to interpret, not because any layer
 //! other than elevation means those things.
 //!
-//! Climate is the exception, and it has to be: it is not a scalar. A pair of
-//! bands has no position on a ramp, and flattening the two axes onto one would
-//! be the single mixed scale `DESIGN.md` section 16.1 forbids the model to
-//! have. [`climate_color`] is a two-dimensional table instead — one color per
-//! pair — so the two axes stay legible as two axes.
+//! Climate and terrain are the exceptions, and they have to be: neither is a
+//! scalar. A pair of bands has no position on a ramp, and flattening the two
+//! axes onto one would be the single mixed scale `DESIGN.md` section 16.1
+//! forbids the model to have; [`climate_color`] is a two-dimensional table
+//! instead, so the two axes stay legible as two axes. Terrain is not ordered at
+//! all — a rainforest is not "more" than a desert — so [`terrain_color`] is a
+//! list of twenty-seven colors chosen to read as the thing they name and to be
+//! told apart from one another at a one-pixel hex radius.
 
-use wgvb::Climate;
+use wgvb::{Climate, Terrain};
 
 /// Palette stops: a scalar position in `[-1, +1]` and its color.
 ///
@@ -97,6 +100,72 @@ const CLIMATE_COLORS: [[[u8; 3]; 5]; 5] = [
         [58, 134, 44],
     ],
 ];
+
+/// One color per [`Terrain`], indexed by discriminant.
+///
+/// Grouped by the families of `DESIGN.md` section 17 and colored to read as
+/// what they are: the ocean family runs dark to light with depth, the dry
+/// family is sand through rust, the forests are three greens dark enough to
+/// tell from the open land above them, and glacial ice and alpine rock are the
+/// two lightest entries on the map.
+///
+/// Two entries are for terrain this version never generates.
+/// [`Terrain::InlandSea`] and [`Terrain::Lake`] are deliberately violet-blue
+/// rather than another shade of ocean: if a future change starts emitting them
+/// by accident, they must be unmistakable on the map rather than plausible.
+///
+/// Changing an entry changes rendered output and so requires bumping
+/// [`crate::RENDER_VERSION`].
+const TERRAIN_COLORS: [[u8; 3]; 27] = [
+    // Ocean.
+    [10, 34, 86],
+    [16, 62, 128],
+    [56, 128, 186],
+    [116, 182, 214],
+    // Inland water. Never generated; see the note above.
+    [128, 72, 200],
+    [168, 116, 236],
+    // Frozen.
+    [238, 244, 250],
+    [156, 172, 150],
+    // Wetland.
+    [122, 152, 104],
+    [70, 100, 66],
+    [98, 114, 78],
+    // Dry.
+    [228, 198, 128],
+    [188, 132, 90],
+    [190, 172, 112],
+    // Open land.
+    [152, 180, 102],
+    [178, 194, 118],
+    [170, 156, 102],
+    [212, 182, 88],
+    // Forest.
+    [46, 94, 80],
+    [58, 122, 60],
+    [22, 92, 40],
+    // Elevated.
+    [146, 134, 88],
+    [134, 122, 114],
+    [200, 198, 194],
+    // Volcanic.
+    [190, 54, 40],
+    [128, 80, 72],
+    // Coastal land.
+    [226, 210, 164],
+];
+
+/// The color of one terrain, as an opaque RGBA.
+///
+/// A total function by construction: the table is indexed by the pinned
+/// discriminants of [`Terrain`], which are contiguous from zero, and a test
+/// holds the table's length to [`Terrain::ALL`].
+#[must_use]
+pub fn terrain_color(terrain: Terrain) -> [u8; 4] {
+    let rgb = TERRAIN_COLORS[terrain as usize];
+    [rgb[0], rgb[1], rgb[2], 255]
+}
 
 /// The color of one climate, as an opaque RGBA.
 ///
@@ -374,6 +443,91 @@ mod tests {
                 assert!(
                     distance > 120,
                     "{heat:?}/{moisture:?} looks like the gutter"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_terrain_table_has_one_entry_for_every_terrain() {
+        assert_eq!(TERRAIN_COLORS.len(), Terrain::ALL.len());
+        for (index, terrain) in Terrain::ALL.into_iter().enumerate() {
+            assert_eq!(
+                usize::from(terrain as u8),
+                index,
+                "{} is not at its own index",
+                terrain.name()
+            );
+        }
+    }
+
+    #[test]
+    fn every_terrain_has_its_own_visibly_distinct_color() {
+        // Twenty-seven colors on one map, at a hex radius that can be a single
+        // pixel. Two that look alike hide a distinction the classifier worked
+        // to make, so the bar is a real separation rather than mere
+        // inequality.
+        for (index, terrain) in Terrain::ALL.into_iter().enumerate() {
+            let here = terrain_color(terrain);
+            assert_eq!(here[3], 255, "{} is not opaque", terrain.name());
+            for other in Terrain::ALL.into_iter().skip(index + 1) {
+                let there = terrain_color(other);
+                let distance: u32 = (0..3).map(|c| u32::from(here[c].abs_diff(there[c]))).sum();
+                assert!(
+                    distance >= 40,
+                    "{} and {} are {distance} apart",
+                    terrain.name(),
+                    other.name()
+                );
+            }
+            let from_gutter: u32 = (0..3)
+                .map(|c| u32::from(here[c].abs_diff(BACKGROUND[c])))
+                .sum();
+            assert!(from_gutter > 70, "{} looks like the gutter", terrain.name());
+        }
+    }
+
+    #[test]
+    fn the_water_terrains_are_the_dark_end_and_ice_is_the_light_end() {
+        // Not a scale, but two ends a reader relies on: open water reads as
+        // water, and the two brightest things on a terrain map are ice and
+        // bare alpine rock.
+        let brightness = |terrain: Terrain| -> u32 {
+            let c = terrain_color(terrain);
+            u32::from(c[0]) + u32::from(c[1]) + u32::from(c[2])
+        };
+        assert!(brightness(Terrain::DeepOcean) < brightness(Terrain::Ocean));
+        assert!(brightness(Terrain::Ocean) < brightness(Terrain::ShallowSea));
+        assert!(brightness(Terrain::ShallowSea) < brightness(Terrain::CoastalWater));
+
+        let lightest = Terrain::ALL
+            .into_iter()
+            .max_by_key(|t| brightness(*t))
+            .expect("the vocabulary is not empty");
+        assert_eq!(lightest, Terrain::GlacialIce);
+    }
+
+    #[test]
+    fn inland_water_is_not_mistakable_for_the_sea() {
+        // The two terrains this version never emits. If a change starts
+        // emitting one, it has to be obvious on the map rather than plausible,
+        // so they are held further from the ocean family than the ordinary
+        // separation asks.
+        for inland in [Terrain::InlandSea, Terrain::Lake] {
+            let here = terrain_color(inland);
+            for ocean in [
+                Terrain::DeepOcean,
+                Terrain::Ocean,
+                Terrain::ShallowSea,
+                Terrain::CoastalWater,
+            ] {
+                let there = terrain_color(ocean);
+                let distance: u32 = (0..3).map(|c| u32::from(here[c].abs_diff(there[c]))).sum();
+                assert!(
+                    distance > 90,
+                    "{} could pass for {}",
+                    inland.name(),
+                    ocean.name()
                 );
             }
         }

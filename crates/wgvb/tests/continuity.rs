@@ -15,7 +15,8 @@
 //! read an addressing index at all, so for them a seam would mean something had
 //! leaked in that has no business being there.
 //!
-//! `regional_uplift`, `roughness`, `ridge`, `elevation`, `heat`, and `moisture`
+//! `regional_uplift`, `roughness`, `ridge`, `elevation`, `heat`, `moisture`,
+//! `basin_influence`, and `volcanic`
 //! *are* addressed by region, and they are what section 30.5 is really about. The first two are
 //! blended across the anchors around a tile; `ridge` reads the blended ridge
 //! orientation, so it fails here if the orientation blend creases even where
@@ -23,16 +24,19 @@
 //! it the one that would show a seam a reader could actually see on a map. The
 //! two climate scalars carry the region's heat and moisture biases the same
 //! way, and `heat` additionally carries elevation through the cooling term, so
-//! a seam in `elevation` would reach it too. A seam in any of them would mean
-//! the blend had degenerated into the hard region boundary section 33.4
-//! forbids.
+//! a seam in `elevation` would reach it too. `basin_influence` and `volcanic`
+//! carry the region's basin and volcanic biases, and the basin composite gives
+//! its bias a heavier share than any other composite gives a region term — so
+//! if a crease in the blend were ever going to show, it would show there
+//! first. A seam in any of them would mean the blend had degenerated into the
+//! hard region boundary section 33.4 forbids.
 
 use wgvb::{Config, Coord, Generator, Sample};
 
 const SEED: u64 = 0x00c0_ffee_0bad_f00d;
 
 /// Every scalar a [`Sample`] carries, named, in a fixed order.
-fn scalars(s: &Sample) -> [(&'static str, f64); 11] {
+fn scalars(s: &Sample) -> [(&'static str, f64); 13] {
     [
         ("continentalness", s.continentalness),
         ("regional", s.regional),
@@ -45,6 +49,8 @@ fn scalars(s: &Sample) -> [(&'static str, f64); 11] {
         ("elevation", s.elevation),
         ("heat", s.heat),
         ("moisture", s.moisture),
+        ("basin_influence", s.basin_influence),
+        ("volcanic", s.volcanic),
     ]
 }
 
@@ -93,8 +99,8 @@ fn steps_along_a_line(
     along_q: bool,
     fixed: i64,
     span: i64,
-) -> [Steps; 11] {
-    let mut steps = [Steps::default(); 11];
+) -> [Steps; 13] {
+    let mut steps = [Steps::default(); 13];
     let mut previous: Option<Sample> = None;
 
     for step in -span..=span {

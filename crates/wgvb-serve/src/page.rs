@@ -7,8 +7,10 @@
 
 use std::fmt::Write as _;
 
-use wgvb::{ALGORITHM_VERSION, Climate, HeatBand, MoistureBand};
-use wgvb_render::{Layer, RENDER_VERSION, Scale, Viewport, climate_color, color};
+use wgvb::{ALGORITHM_VERSION, Climate, HeatBand, MoistureBand, Terrain};
+use wgvb_render::{
+    Key, Layer, RENDER_VERSION, Scale, Viewport, climate_color, color, terrain_color,
+};
 
 use crate::view::{COMPASS, Compass, MAX_HEX_RADIUS, MIN_HEX_RADIUS, View};
 
@@ -176,15 +178,21 @@ fn layers(view: &View) -> String {
 /// ramp — deliberately, so two of them can be compared by eye — which means the
 /// same blue is *deep* on one layer, *cold* on the next, and *dry* on the one
 /// after; a reader who has to hold that in their head will eventually not.
-/// [`Layer::scale`] is where the words come from, because the renderer owns the
-/// palette and this server is a front end rather than a second renderer.
+/// [`Layer::key`] is where the words and the shape come from, because the
+/// renderer owns the palette and this server is a front end rather than a
+/// second renderer.
+///
+/// A `match` over [`Key`] rather than over an `Option`, so a fourth kind of
+/// key added to the renderer is a compile error here rather than a page that
+/// silently draws nothing.
 ///
 /// Nothing here emits a link. The scroll and layer controls are the page's
 /// navigation, and a test counts them.
 fn legend(layer: Layer) -> String {
-    match layer.scale() {
-        Some(scale) => ramp_key(scale),
-        None => climate_key(),
+    match layer.key() {
+        Key::Ramp(scale) => ramp_key(scale),
+        Key::Climate => climate_key(),
+        Key::Terrain => terrain_key(),
     }
 }
 
@@ -253,6 +261,35 @@ fn climate_key() -> String {
     html
 }
 
+/// The terrain key: one named swatch per terrain, in vocabulary order.
+///
+/// A list rather than a ramp or a grid, because terrain is neither ordered nor
+/// two-dimensional: a rainforest is not more of anything than a desert is.
+/// Every entry is named, which the climate table does not need to do — there
+/// the row and column headers say it once each — and here there is nothing but
+/// the name to say which swatch is which.
+///
+/// Inland water is in the list even though no tile ever carries it. That is
+/// the point: a reader who sees one of those two colors on a map is looking at
+/// a defect, and a key that hid them would make it harder to notice.
+fn terrain_key() -> String {
+    let mut html = String::new();
+    html.push_str("<ul class=\"swatches\" aria-label=\"what the colors mean\">\n");
+    for terrain in Terrain::ALL {
+        let rgba = terrain_color(terrain);
+        let _ = write!(
+            html,
+            "<li><i style=\"background:#{:02x}{:02x}{:02x}\"></i>{}</li>",
+            rgba[0],
+            rgba[1],
+            rgba[2],
+            terrain.name()
+        );
+    }
+    html.push_str("\n</ul>\n");
+    html
+}
+
 /// The whole stylesheet, inline, because a second request for eight hundred
 /// bytes is not worth a second route.
 const STYLE: &str = r#"<style>
@@ -290,6 +327,9 @@ h1 code { color: var(--ink); }
 .key th { font-weight: 400; color: var(--quiet); text-align: right; padding: 0 6px; }
 .key th[scope="col"] { text-align: center; }
 .key td { width: 5.5em; height: 2.2em; border: 1px solid var(--paper); }
+.swatches { display: flex; flex-wrap: wrap; gap: 4px 14px; list-style: none; margin: 16px 0; padding: 0; }
+.swatches li { display: flex; align-items: center; gap: 6px; color: var(--quiet); }
+.swatches i { display: block; width: 1.6em; height: 1em; border: 1px solid var(--edge); }
 .readout { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 16px 0; }
 .readout dt { color: var(--quiet); }
 .readout dd { margin: 0; }

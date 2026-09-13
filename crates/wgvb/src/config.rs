@@ -91,6 +91,17 @@ pub struct Config {
 
     /// Below this elevation a water tile is [`crate::Elevation::DeepWater`].
     pub deep_water_level: f64,
+    /// Boundary between [`crate::Terrain::Ocean`] and
+    /// [`crate::Terrain::ShallowSea`], inside the
+    /// [`crate::Elevation::ShallowWater`] band.
+    ///
+    /// A terrain threshold rather than an elevation-band one: section 14.1's
+    /// ladder has two water bands and section 17's ocean family has four
+    /// terrains, so one more depth cut is needed and it belongs here with the
+    /// rest of the ladder. It must sit strictly between
+    /// [`Config::deep_water_level`] and [`Config::sea_level`], which validation
+    /// enforces along with them.
+    pub ocean_level: f64,
     /// Above [`Config::sea_level`] and up to this, land is
     /// [`crate::Elevation::Lowland`].
     pub upland_level: f64,
@@ -129,6 +140,28 @@ pub struct Config {
     /// counterpart, which is section 16 written literally rather than an
     /// omission.
     pub moisture_variation_wavelength_miles: f64,
+
+    /// Wavelength of the broad basin field of `DESIGN.md` section 17.
+    ///
+    /// The coarsest of the three basin scales: whole regions that sit low
+    /// relative to the ground around them. Shorter than the continental field,
+    /// because a basin the size of a continent is a sea and this term is not
+    /// where seas come from.
+    pub basin_broad_wavelength_miles: f64,
+    /// Wavelength of the regional basin field.
+    pub basin_regional_wavelength_miles: f64,
+    /// Wavelength of the local basin field.
+    ///
+    /// The scale at which a hollow is a hollow rather than a lowland: tens of
+    /// hexes, so a marsh sits in a dip a player can walk out of.
+    pub basin_local_wavelength_miles: f64,
+
+    /// Wavelength of the volcanic tendency field of `DESIGN.md` section 17.
+    ///
+    /// Belts rather than points. A volcano needs this field *and* uplift *and*
+    /// a local peak, so the field's job is to say where the crust is restless,
+    /// not to place cones.
+    pub volcanic_wavelength_miles: f64,
 
     /// Wavelength of the ridge structure field of `DESIGN.md` section 10.
     ///
@@ -186,6 +219,14 @@ pub struct Config {
     pub moisture_octaves: u8,
     /// Octave count for the moisture variation ladder, in `1..=16`.
     pub moisture_variation_octaves: u8,
+    /// Octave count for the broad basin ladder, in `1..=16`.
+    pub basin_broad_octaves: u8,
+    /// Octave count for the regional basin ladder, in `1..=16`.
+    pub basin_regional_octaves: u8,
+    /// Octave count for the local basin ladder, in `1..=16`.
+    pub basin_local_octaves: u8,
+    /// Octave count for the volcanic tendency ladder, in `1..=16`.
+    pub volcanic_octaves: u8,
     /// Frequency multiplier between successive fbm octaves.
     ///
     /// Shared by every ladder: lacunarity is shape rather than scale, and
@@ -230,6 +271,29 @@ pub struct Config {
     pub moisture_region_weight: f64,
     /// Weight of the local variation term in the moisture composite.
     pub moisture_variation_weight: f64,
+
+    /// Weight of the broad basin field in the basin composite of `DESIGN.md`
+    /// section 17.
+    ///
+    /// The composite divides by the total weight, so this and the three below
+    /// are relative amplitudes. They accumulate coarsest first: broad field,
+    /// region bias, regional field, local field.
+    pub basin_broad_weight: f64,
+    /// Weight of the blended region basin bias in the basin composite.
+    ///
+    /// This is section 11.1's tendency toward enclosed low ground, and it is
+    /// the term that makes basins a property of a place rather than of a
+    /// wavelength.
+    pub basin_region_weight: f64,
+    /// Weight of the regional basin field in the basin composite.
+    pub basin_regional_weight: f64,
+    /// Weight of the local basin field in the basin composite.
+    pub basin_local_weight: f64,
+
+    /// Weight of the volcanic tendency field in the volcanic composite.
+    pub volcanic_field_weight: f64,
+    /// Weight of the blended region volcanic bias in the volcanic composite.
+    pub volcanic_region_weight: f64,
 
     /// How much temperature the full height of the land scale costs, in
     /// `[0, 2]`.
@@ -276,6 +340,77 @@ pub struct Config {
     /// Upper bound of [`crate::MoistureBand::Humid`]; above it,
     /// [`crate::MoistureBand::Saturated`].
     pub humid_level: f64,
+
+    /// How strongly basin influence amplifies moisture into terrain wetness.
+    ///
+    /// Terrain reads `moisture + weight * basin * moisture` rather than
+    /// moisture alone, so a basin makes wet ground wetter and dry ground drier.
+    /// That product is the whole of section 17's "dry endorheic regions such as
+    /// the Great Basin are valid geographic results": closed drainage
+    /// concentrates whatever water arrives, and in a dry climate what it
+    /// concentrates is salt. A rise, where the influence is negative, sheds
+    /// water either way.
+    ///
+    /// Modest on purpose. Terrain has to read as a consequence of the climate
+    /// map beside it, and a large weight here would make it read as a
+    /// consequence of the basin map instead. Zero disables the coupling, which
+    /// is the configuration `tests/terrain.rs` uses to show what it is
+    /// responsible for.
+    pub terrain_basin_weight: f64,
+
+    /// Terrain wetness at or above which flat lowland is a wetland.
+    pub wetland_level: f64,
+    /// Local relief at or below which ground is flat enough to hold a wetland.
+    pub wetland_relief_level: f64,
+
+    /// Elevation at or below which land with an adjacent ocean-water tile is
+    /// [`crate::Terrain::Coast`].
+    ///
+    /// Section 17's coastal land is "land near sea level with an adjacent
+    /// ocean-water tile", which is two conditions and not one: a cliff rising
+    /// straight out of the sea is not a coastal plain. Adjacency comes from the
+    /// six neighboring elevation scalars the relief estimate already needs, so
+    /// it costs nothing beyond this threshold.
+    pub coast_level: f64,
+
+    /// Temperature at or below which land is [`crate::Terrain::GlacialIce`].
+    ///
+    /// Below [`Config::polar_level`], so persistent ice is the cold end of the
+    /// polar band rather than the whole of it — section 17 asks elevation and
+    /// moisture to separate ice from tundra, and elevation cooling is already
+    /// in the temperature this is compared against.
+    pub glacial_ice_level: f64,
+    /// Temperature at or below which mountain-band land is
+    /// [`crate::Terrain::Alpine`] rather than [`crate::Terrain::Mountain`].
+    pub alpine_level: f64,
+
+    /// Local relief at or above which highland-band land is
+    /// [`crate::Terrain::Mountain`] rather than [`crate::Terrain::Hills`].
+    pub mountain_relief_level: f64,
+    /// Local relief at or above which upland-band land is
+    /// [`crate::Terrain::Hills`].
+    pub hill_relief_level: f64,
+    /// Local relief at or above which dry land is [`crate::Terrain::Badlands`].
+    ///
+    /// Section 17's "exposed relief": badlands are what a dry climate does to
+    /// broken ground, so this is checked against terrain wetness as well.
+    pub badlands_relief_level: f64,
+
+    /// Volcanic tendency at or above which a local peak on high ground is
+    /// [`crate::Terrain::Volcano`].
+    ///
+    /// High, because a volcano is rare by construction and this is only one of
+    /// the three conditions: the tile must also stand above all six of its
+    /// neighbors by [`Config::volcano_prominence_level`] and be in the highland
+    /// band or above. Section 17 and section 33.1: rarity comes from the
+    /// conjunction, never from a per-tile draw.
+    pub volcano_level: f64,
+    /// How far above its highest neighbor a tile must stand to be a peak, as a
+    /// fraction of [`Config::relief_reference_delta_per_hex`].
+    pub volcano_prominence_level: f64,
+    /// Volcanic tendency at or above which upland or higher ground is
+    /// [`crate::Terrain::VolcanicHighland`].
+    pub volcanic_highland_level: f64,
 
     /// Constant added to the elevation composite before it is shaped.
     ///
@@ -381,6 +516,10 @@ impl Default for Config {
             // distribution tests were already asserting, so no threshold
             // followed.
             deep_water_level: -0.15,
+            // Halfway up the shallow-water band, so `ocean` and `shallow sea`
+            // each hold about half of the shelf. Measured in
+            // `tests/terrain.rs` like every other share.
+            ocean_level: -0.075,
             upland_level: 0.18,
             highland_level: 0.35,
             mountain_level: 0.48,
@@ -401,6 +540,18 @@ impl Default for Config {
             moisture_wavelength_miles: 6_000.0,
             // 100 hexes.
             moisture_variation_wavelength_miles: 600.0,
+
+            // 600 hexes. Shorter than the continental field: a depression the
+            // size of a continent is an ocean, and oceans come from
+            // continentalness, not from here.
+            basin_broad_wavelength_miles: 3_600.0,
+            // 150 hexes.
+            basin_regional_wavelength_miles: 900.0,
+            // 40 hexes, so a hollow is a few dozen tiles across.
+            basin_local_wavelength_miles: 240.0,
+
+            // 200 hexes. Volcanic belts, not cones: the cone is the peak test.
+            volcanic_wavelength_miles: 1_200.0,
 
             // 80 hexes, so crests land roughly 40 hexes apart. That sits inside
             // the 40-200 hex "regional relief" row of the section 10 table.
@@ -443,6 +594,15 @@ impl Default for Config {
             heat_octaves: 3,
             moisture_octaves: 3,
             moisture_variation_octaves: 3,
+            // The finest octave of each: basin 450, 112.5, and 30 miles, and
+            // volcanic 150 — all well above the twelve-mile Nyquist wavelength
+            // of the tile grid. Basins are shapes rather than textures, so the
+            // ladders are short on purpose: a basin field with a per-tile
+            // component would put a marsh next to a desert.
+            basin_broad_octaves: 4,
+            basin_regional_octaves: 4,
+            basin_local_octaves: 4,
+            volcanic_octaves: 4,
             fbm_lacunarity: 2.0,
             fbm_gain: 0.5,
 
@@ -470,6 +630,20 @@ impl Default for Config {
             moisture_field_weight: 1.0,
             moisture_region_weight: 0.5,
             moisture_variation_weight: 0.25,
+
+            // The halving ladder once more, with the region bias sitting where
+            // its anchors sit — between the broad field and the regional one.
+            // A basin is mostly a broad fact about a place and partly a hollow
+            // in the ground.
+            basin_broad_weight: 1.0,
+            basin_region_weight: 0.6,
+            basin_regional_weight: 0.5,
+            basin_local_weight: 0.25,
+
+            // Volcanism is a regional fact first: the field says which belt,
+            // the region bias says how restless this part of it is.
+            volcanic_field_weight: 1.0,
+            volcanic_region_weight: 0.6,
 
             // Measured against `tests/climate.rs`: with cooling disabled the
             // mountain bands sit wherever the broad field put them, and 0.6
@@ -503,6 +677,28 @@ impl Default for Config {
             dry_level: -0.10,
             moderate_level: 0.10,
             humid_level: 0.30,
+
+            // Every value below was measured against `tests/terrain.rs` rather
+            // than guessed, on the same terms as the elevation and climate
+            // ladders: the distribution tests say which shares these produce,
+            // and the shares are what was tuned.
+            terrain_basin_weight: 0.35,
+
+            wetland_level: 0.30,
+            wetland_relief_level: 0.34,
+
+            coast_level: 0.04,
+
+            glacial_ice_level: -0.62,
+            alpine_level: -0.10,
+
+            mountain_relief_level: 0.42,
+            hill_relief_level: 0.38,
+            badlands_relief_level: 0.55,
+
+            volcano_level: 0.30,
+            volcano_prominence_level: 0.03,
+            volcanic_highland_level: 0.50,
 
             // Measured, not guessed: the unshaped composite has its 69th
             // percentile at about +0.13, so sinking the world by that much puts
@@ -553,12 +749,18 @@ impl Config {
         // range before it is checked against the one below it, so a not-a-number
         // is reported as `NotFinite` rather than silently failing a comparison.
         in_range("deep_water_level", self.deep_water_level, -1.0, 1.0)?;
+        in_range("ocean_level", self.ocean_level, -1.0, 1.0)?;
         in_range("sea_level", self.sea_level, -1.0, 1.0)?;
         in_range("upland_level", self.upland_level, -1.0, 1.0)?;
         in_range("highland_level", self.highland_level, -1.0, 1.0)?;
         in_range("mountain_level", self.mountain_level, -1.0, 1.0)?;
+        // `ocean_level` is a terrain cut inside the shallow-water band rather
+        // than a band threshold of its own, but it belongs in the same ladder:
+        // out of order it would leave `ocean` or `shallow sea` unreachable,
+        // which is the same silent defect an out-of-order band threshold is.
         ascending(&[
             ("deep_water_level", self.deep_water_level),
+            ("ocean_level", self.ocean_level),
             ("sea_level", self.sea_level),
             ("upland_level", self.upland_level),
             ("highland_level", self.highland_level),
@@ -605,6 +807,19 @@ impl Config {
             "moisture_variation_wavelength_miles",
             self.moisture_variation_wavelength_miles,
         )?;
+        positive(
+            "basin_broad_wavelength_miles",
+            self.basin_broad_wavelength_miles,
+        )?;
+        positive(
+            "basin_regional_wavelength_miles",
+            self.basin_regional_wavelength_miles,
+        )?;
+        positive(
+            "basin_local_wavelength_miles",
+            self.basin_local_wavelength_miles,
+        )?;
+        positive("volcanic_wavelength_miles", self.volcanic_wavelength_miles)?;
 
         positive("warp_wavelength_miles", self.warp_wavelength_miles)?;
         positive("warp_strength_miles", self.warp_strength_miles)?;
@@ -643,7 +858,51 @@ impl Config {
         positive("moisture_field_weight", self.moisture_field_weight)?;
         positive("moisture_region_weight", self.moisture_region_weight)?;
         positive("moisture_variation_weight", self.moisture_variation_weight)?;
+        positive("basin_broad_weight", self.basin_broad_weight)?;
+        positive("basin_region_weight", self.basin_region_weight)?;
+        positive("basin_regional_weight", self.basin_regional_weight)?;
+        positive("basin_local_weight", self.basin_local_weight)?;
+        positive("volcanic_field_weight", self.volcanic_field_weight)?;
+        positive("volcanic_region_weight", self.volcanic_region_weight)?;
         in_range("elevation_cooling", self.elevation_cooling, 0.0, 2.0)?;
+
+        // The terrain thresholds. Every one of them is compared against a
+        // value the generator produces in a known range, so the range check is
+        // the whole of what can be checked here: a threshold inside its range
+        // but badly placed leaves a terrain unreachable, and that is what the
+        // distribution tests in `tests/terrain.rs` are for.
+        in_range("terrain_basin_weight", self.terrain_basin_weight, 0.0, 1.0)?;
+        in_range("wetland_level", self.wetland_level, -1.0, 1.0)?;
+        in_range("wetland_relief_level", self.wetland_relief_level, 0.0, 1.0)?;
+        in_range("coast_level", self.coast_level, -1.0, 1.0)?;
+        in_range("glacial_ice_level", self.glacial_ice_level, -1.0, 1.0)?;
+        in_range("alpine_level", self.alpine_level, -1.0, 1.0)?;
+        in_range(
+            "mountain_relief_level",
+            self.mountain_relief_level,
+            0.0,
+            1.0,
+        )?;
+        in_range("hill_relief_level", self.hill_relief_level, 0.0, 1.0)?;
+        in_range(
+            "badlands_relief_level",
+            self.badlands_relief_level,
+            0.0,
+            1.0,
+        )?;
+        in_range("volcano_level", self.volcano_level, -1.0, 1.0)?;
+        in_range(
+            "volcano_prominence_level",
+            self.volcano_prominence_level,
+            0.0,
+            1.0,
+        )?;
+        in_range(
+            "volcanic_highland_level",
+            self.volcanic_highland_level,
+            -1.0,
+            1.0,
+        )?;
 
         in_range("elevation_offset", self.elevation_offset, -1.0, 1.0)?;
         in_range("elevation_contrast", self.elevation_contrast, 0.0, 1.0)?;
@@ -665,10 +924,10 @@ impl Config {
         Ok(())
     }
 
-    /// The five fbm ladders, as `(octave count field name, count, base
+    /// Every fbm ladder, as `(octave count field name, count, base
     /// wavelength)`.
     ///
-    /// One list, walked by both octave-count checks, so a sixth ladder cannot
+    /// One list, walked by both octave-count checks, so a new ladder cannot
     /// be added to the configuration and validated by only one of them.
     fn octave_ladders(&self) -> impl Iterator<Item = (&'static str, u8, f64)> {
         [
@@ -711,6 +970,26 @@ impl Config {
                 "moisture_variation_octaves",
                 self.moisture_variation_octaves,
                 self.moisture_variation_wavelength_miles,
+            ),
+            (
+                "basin_broad_octaves",
+                self.basin_broad_octaves,
+                self.basin_broad_wavelength_miles,
+            ),
+            (
+                "basin_regional_octaves",
+                self.basin_regional_octaves,
+                self.basin_regional_wavelength_miles,
+            ),
+            (
+                "basin_local_octaves",
+                self.basin_local_octaves,
+                self.basin_local_wavelength_miles,
+            ),
+            (
+                "volcanic_octaves",
+                self.volcanic_octaves,
+                self.volcanic_wavelength_miles,
             ),
         ]
         .into_iter()
@@ -887,6 +1166,7 @@ mod tests {
         vec![
             ("sea_level", |c, v| c.sea_level = v),
             ("deep_water_level", |c, v| c.deep_water_level = v),
+            ("ocean_level", |c, v| c.ocean_level = v),
             ("upland_level", |c, v| c.upland_level = v),
             ("highland_level", |c, v| c.highland_level = v),
             ("mountain_level", |c, v| c.mountain_level = v),
@@ -938,6 +1218,26 @@ mod tests {
             ("moisture_variation_weight", |c, v| {
                 c.moisture_variation_weight = v
             }),
+            ("basin_broad_wavelength_miles", |c, v| {
+                c.basin_broad_wavelength_miles = v
+            }),
+            ("basin_regional_wavelength_miles", |c, v| {
+                c.basin_regional_wavelength_miles = v
+            }),
+            ("basin_local_wavelength_miles", |c, v| {
+                c.basin_local_wavelength_miles = v
+            }),
+            ("volcanic_wavelength_miles", |c, v| {
+                c.volcanic_wavelength_miles = v
+            }),
+            ("basin_broad_weight", |c, v| c.basin_broad_weight = v),
+            ("basin_region_weight", |c, v| c.basin_region_weight = v),
+            ("basin_regional_weight", |c, v| c.basin_regional_weight = v),
+            ("basin_local_weight", |c, v| c.basin_local_weight = v),
+            ("volcanic_field_weight", |c, v| c.volcanic_field_weight = v),
+            ("volcanic_region_weight", |c, v| {
+                c.volcanic_region_weight = v
+            }),
             ("elevation_cooling", |c, v| c.elevation_cooling = v),
             ("polar_level", |c, v| c.polar_level = v),
             ("cold_level", |c, v| c.cold_level = v),
@@ -947,6 +1247,22 @@ mod tests {
             ("dry_level", |c, v| c.dry_level = v),
             ("moderate_level", |c, v| c.moderate_level = v),
             ("humid_level", |c, v| c.humid_level = v),
+            ("terrain_basin_weight", |c, v| c.terrain_basin_weight = v),
+            ("wetland_level", |c, v| c.wetland_level = v),
+            ("wetland_relief_level", |c, v| c.wetland_relief_level = v),
+            ("coast_level", |c, v| c.coast_level = v),
+            ("glacial_ice_level", |c, v| c.glacial_ice_level = v),
+            ("alpine_level", |c, v| c.alpine_level = v),
+            ("mountain_relief_level", |c, v| c.mountain_relief_level = v),
+            ("hill_relief_level", |c, v| c.hill_relief_level = v),
+            ("badlands_relief_level", |c, v| c.badlands_relief_level = v),
+            ("volcano_level", |c, v| c.volcano_level = v),
+            ("volcano_prominence_level", |c, v| {
+                c.volcano_prominence_level = v
+            }),
+            ("volcanic_highland_level", |c, v| {
+                c.volcanic_highland_level = v
+            }),
             ("elevation_offset", |c, v| c.elevation_offset = v),
             ("elevation_contrast", |c, v| c.elevation_contrast = v),
             ("relief_reference_delta_per_hex", |c, v| {
@@ -1003,6 +1319,16 @@ mod tests {
             "heat_wavelength_miles",
             "moisture_wavelength_miles",
             "moisture_variation_wavelength_miles",
+            "basin_broad_wavelength_miles",
+            "basin_regional_wavelength_miles",
+            "basin_local_wavelength_miles",
+            "volcanic_wavelength_miles",
+            "basin_broad_weight",
+            "basin_region_weight",
+            "basin_regional_weight",
+            "basin_local_weight",
+            "volcanic_field_weight",
+            "volcanic_region_weight",
             "relief_reference_delta_per_hex",
             "fbm_gain",
             "macro_region_influence",
@@ -1028,6 +1354,7 @@ mod tests {
     fn a_band_threshold_outside_the_normalized_range_is_rejected() {
         for field in [
             "deep_water_level",
+            "ocean_level",
             "sea_level",
             "upland_level",
             "highland_level",
@@ -1066,6 +1393,7 @@ mod tests {
         // variant is a silently broken world rather than a compile error.
         let ordered = [
             "deep_water_level",
+            "ocean_level",
             "sea_level",
             "upland_level",
             "highland_level",
@@ -1074,6 +1402,7 @@ mod tests {
         let baseline = Config::default();
         let values = [
             baseline.deep_water_level,
+            baseline.ocean_level,
             baseline.sea_level,
             baseline.upland_level,
             baseline.highland_level,
@@ -1244,10 +1573,14 @@ mod tests {
     #[test]
     fn a_sea_level_that_keeps_the_ladder_ordered_is_accepted() {
         // Sea level is the tuning knob for land fraction, so moving it within
-        // the ladder must not need any other edit.
+        // the ladder must not need any edit beyond the one rung that sits
+        // under it. `ocean_level` is that rung — the cut between `ocean` and
+        // `shallow sea` inside the shallow-water band — and it has to follow
+        // sea level down or the shelf it divides no longer exists.
         for good in [-0.1, -0.05, 0.0, 0.1, 0.17] {
             let config = Config {
                 sea_level: good,
+                ocean_level: (Config::default().deep_water_level + good) * 0.5,
                 ..Config::default()
             };
             assert_eq!(config.validate(), Ok(()), "{good}");
@@ -1287,6 +1620,10 @@ mod tests {
                 heat_octaves: 1,
                 moisture_octaves: 1,
                 moisture_variation_octaves: 1,
+                basin_broad_octaves: 1,
+                basin_regional_octaves: 1,
+                basin_local_octaves: 1,
+                volcanic_octaves: 1,
                 ..Config::default()
             };
             assert_eq!(config.validate(), Ok(()), "lacunarity {good}");

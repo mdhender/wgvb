@@ -12,6 +12,7 @@
 //!
 //! This crate is intentionally free of persistence and rendering dependencies.
 
+mod basin;
 mod climate;
 mod config;
 mod coord;
@@ -22,6 +23,7 @@ mod hash;
 mod noise;
 mod region;
 mod relief;
+mod terrain;
 mod tile;
 
 pub use config::{Config, ConfigError, MAX_CONTRAST_PASSES, MAX_FBM_OCTAVES};
@@ -29,10 +31,11 @@ pub use coord::{Coord, DIRECTION_COUNT, DIRECTIONS, Vec2, axial_to_world, direct
 pub use field::Field;
 pub use generator::{Generator, Sample};
 pub use hash::{
-    DOM_BASIN, DOM_CONTINENTALNESS, DOM_DETAIL_WARP_X, DOM_DETAIL_WARP_Y, DOM_FIELD_OFFSET,
-    DOM_MOISTURE, DOM_MOISTURE_VARIATION, DOM_REGION_STYLE, DOM_REGIONAL_ELEVATION, DOM_RELIEF,
-    DOM_RIDGE_ORIENTATION, DOM_RIDGE_STRUCTURE, DOM_TEMPERATURE, DOM_TERRAIN_DETAIL, DOM_VOLCANIC,
-    DOM_WARP_X, DOM_WARP_Y, domain, hash_n, hash2, hash3, signed_unit_f64, unit_f64,
+    DOM_BASIN, DOM_BASIN_LOCAL, DOM_BASIN_REGIONAL, DOM_CONTINENTALNESS, DOM_DETAIL_WARP_X,
+    DOM_DETAIL_WARP_Y, DOM_FIELD_OFFSET, DOM_MOISTURE, DOM_MOISTURE_VARIATION, DOM_REGION_STYLE,
+    DOM_REGIONAL_ELEVATION, DOM_RELIEF, DOM_RIDGE_ORIENTATION, DOM_RIDGE_STRUCTURE,
+    DOM_TEMPERATURE, DOM_TERRAIN_DETAIL, DOM_VOLCANIC, DOM_WARP_X, DOM_WARP_Y, domain, hash_n,
+    hash2, hash3, signed_unit_f64, unit_f64,
 };
 pub use region::{RegionParams, UnitVec2};
 pub use tile::{Climate, Elevation, HeatBand, MoistureBand, Terrain, Tile};
@@ -71,7 +74,18 @@ pub use tile::{Climate, Elevation, HeatBand, MoistureBand, Terrain, Tile};
 ///   `#[serde(default)]`, deliberately, so a world file written under version 3
 ///   does not carry those values and cannot be reopened — and a version number
 ///   that stayed at 3 would be claiming otherwise. See section 21.1.
-pub const ALGORITHM_VERSION: u32 = 4;
+/// - **5** — phase 6. Basins, volcanic tendency, and terrain. Like version 4
+///   this moves nothing: elevation, relief, heat, and moisture are
+///   bit-identical to what version 4 produced, and the golden tables that pin
+///   them did not have to be re-recorded. That is a decision rather than a
+///   coincidence — a basin term inside the elevation composite is the obvious
+///   way to make a depression *be* lower ground, and it would have moved every
+///   tile in every world, so section 17's placement of basin influence in
+///   terrain is what the golden table now enforces. What changed is [`Config`],
+///   which gained the basin and volcanic wavelengths, octave counts, and
+///   weights, the ocean depth cut, and the terrain thresholds. That is the bump
+///   on its own, on the same terms as version 4.
+pub const ALGORITHM_VERSION: u32 = 5;
 
 /// World seed. One seed plus one [`Config`] plus one [`ALGORITHM_VERSION`]
 /// determines every tile.

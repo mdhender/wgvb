@@ -43,7 +43,7 @@ mod palette;
 use hexx::{Hex, HexLayout, HexOrientation, OffsetHexMode, Vec2};
 use wgvb::{Component, Coord, Generator, Sample};
 
-pub use palette::{BACKGROUND, climate_color, color};
+pub use palette::{BACKGROUND, climate_color, color, terrain_color};
 
 /// Palette and symbol-rule version. Cached or golden-compared rendered output
 /// is invalid across a change to this value.
@@ -96,14 +96,9 @@ pub fn to_hex(q: Component, r: Component) -> Hex {
 
 /// A diagnostic layer.
 ///
-/// Only the fields that exist at this phase appear here. Terrain arrives with
-/// the phase that generates it; there is deliberately no terrain layer while
-/// [`wgvb::Tile::terrain`] is provisional, because a terrain image nobody
-/// should trust is worse than no terrain image.
-///
-/// Almost every layer reads one scalar out of a [`Sample`], which is what keeps
-/// the renderer from needing a second traversal of the world per layer. There
-/// are two exceptions, and they are different kinds of exception:
+/// Most layers read one scalar out of a [`Sample`], which is what keeps the
+/// renderer from needing a second traversal of the world per layer. There are
+/// three exceptions, and they are different kinds of exception:
 ///
 /// - [`Layer::Relief`] is a scalar the sample does not carry, because relief
 ///   costs seven elevation evaluations and no other layer should pay for it. It
@@ -112,6 +107,9 @@ pub fn to_hex(q: Component, r: Component) -> Hex {
 ///   has no place on the scalar ramp and [`Layer::value`] returns nothing for
 ///   it; [`Layer::color_at`] is the total function and is what the renderer
 ///   uses.
+/// - [`Layer::Terrain`] is not a scalar either, and is not even ordered: a
+///   rainforest is not more of anything than a desert is. It costs a whole
+///   tile — seven elevation evaluations — for the same reason relief does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Layer {
     Continentalness,
@@ -175,8 +173,56 @@ pub enum Layer {
     ///
     /// Bands rather than a ramp, so a boundary is a boundary. The two scalar
     /// layers show where inside a band a tile sits; this one shows which band
-    /// it is, which is what a terrain classifier will read in phase 6.
+    /// it is, and it is one of the things the terrain classifier reads.
     Climate,
+
+    /// Basin influence: enclosed low ground at the top of the ramp, rises at
+    /// the bottom.
+    ///
+    /// Read against [`Layer::Elevation`] over the same window. The two are not
+    /// the same picture and must not be: elevation says how high the ground
+    /// is, and this says how enclosed it is, so a high plateau ringed by
+    /// mountains is dark on one layer and bright on the other. Nothing here
+    /// reaches elevation, and a basin layer that traced the coastlines would
+    /// mean something had.
+    Basin,
+    /// Volcanic tendency: restless crust at the top of the ramp.
+    ///
+    /// A tendency and not a cone. The cones are on [`Layer::Terrain`], and
+    /// this is the layer that explains where they are and — more usefully —
+    /// why the rest of the belt has none.
+    Volcanic,
+
+    /// The game-facing terrain, from the table in [`terrain_color`].
+    ///
+    /// This is the layer the phase 6 exit condition is read off. What to look
+    /// for over several widely separated windows: terrain that corresponds to
+    /// the elevation and climate layers of the same window, boundaries that
+    /// follow the shape of the ground rather than the shape of a lattice, and
+    /// coast only ever at the water's edge.
+    ///
+    /// Not a ramp and not a grid: terrain is a vocabulary, so the key is a
+    /// list of swatches.
+    Terrain,
+}
+
+/// What a layer's key is, which is not the same question for every layer.
+///
+/// The renderer owns this because it owns the palette. `DESIGN.md` section
+/// 29.1 makes `wgvb-serve` a front end and not a second renderer, and a front
+/// end that decided for itself what blue meant would be exactly that.
+///
+/// An enum rather than an `Option<Scale>` because there are now three shapes
+/// of key and a front end has to draw all three: a two-armed match would leave
+/// one of them falling into a branch nobody chose.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Key {
+    /// The shared scalar ramp, labeled at both ends.
+    Ramp(Scale),
+    /// The two-axis climate table: heat down, moisture across.
+    Climate,
+    /// One swatch per [`wgvb::Terrain`], in vocabulary order.
+    Terrain,
 }
 
 /// What a scalar layer's ramp means, for a legend.
@@ -199,7 +245,7 @@ pub struct Scale {
 
 impl Layer {
     /// Every layer, in the order the command line lists them.
-    pub const ALL: [Layer; 13] = [
+    pub const ALL: [Layer; 16] = [
         Layer::Continentalness,
         Layer::Regional,
         Layer::Local,
@@ -213,6 +259,9 @@ impl Layer {
         Layer::Temperature,
         Layer::Moisture,
         Layer::Climate,
+        Layer::Basin,
+        Layer::Volcanic,
+        Layer::Terrain,
     ];
 
     /// The layer's command-line name.
@@ -232,6 +281,9 @@ impl Layer {
             Layer::Temperature => "temperature",
             Layer::Moisture => "moisture",
             Layer::Climate => "climate",
+            Layer::Basin => "basin",
+            Layer::Volcanic => "volcanic",
+            Layer::Terrain => "terrain",
         }
     }
 
@@ -249,10 +301,7 @@ impl Layer {
             .ok_or_else(|| RenderError::UnknownLayer(name.to_string()))
     }
 
-    /// What this layer's ramp runs between, or `None` if it has no ramp.
-    ///
-    /// `None` for [`Layer::Climate`] and only for it: a pair of bands is drawn
-    /// from [`climate_color`]'s table, which is a key rather than a scale.
+    /// What key this layer needs.
     ///
     /// The words matter more here than anywhere else in the crate. Every scalar
     /// layer shares one ramp, deliberately, so that two of them can be compared
@@ -260,7 +309,7 @@ impl Layer {
     /// layer, *cold* on the next, and *dry* on the one after. A reader who has
     /// to remember which is which will eventually not.
     #[must_use]
-    pub const fn scale(self) -> Option<Scale> {
+    pub const fn key(self) -> Key {
         let full = (-1.0, 1.0);
         let (low, high, range) = match self {
             Layer::Continentalness => ("ocean", "continent", full),
@@ -277,9 +326,26 @@ impl Layer {
             Layer::RegionInfluence => ("sunken", "uplifted", full),
             Layer::Temperature => ("cold", "hot", full),
             Layer::Moisture => ("dry", "wet", full),
-            Layer::Climate => return None,
+            Layer::Basin => ("rise", "basin", full),
+            Layer::Volcanic => ("quiet", "restless", full),
+            Layer::Climate => return Key::Climate,
+            Layer::Terrain => return Key::Terrain,
         };
-        Some(Scale { low, high, range })
+        Key::Ramp(Scale { low, high, range })
+    }
+
+    /// What this layer's ramp runs between, or `None` if it has no ramp.
+    ///
+    /// `None` for exactly the two layers that are not scalars,
+    /// [`Layer::Climate`] and [`Layer::Terrain`]. Derived from [`Layer::key`]
+    /// rather than written twice, so the two cannot disagree about which
+    /// layers are scalar.
+    #[must_use]
+    pub const fn scale(self) -> Option<Scale> {
+        match self.key() {
+            Key::Ramp(scale) => Some(scale),
+            Key::Climate | Key::Terrain => None,
+        }
     }
 
     /// This layer's scalar at one coordinate, or `None` if it has none.
@@ -296,7 +362,7 @@ impl Layer {
     #[must_use]
     pub fn value(self, generator: &Generator, coord: Coord) -> Option<f64> {
         match self {
-            Layer::Climate => None,
+            Layer::Climate | Layer::Terrain => None,
             Layer::Relief => Some(generator.relief(coord)),
             other => Some(other.of_sample(&generator.sample(coord))),
         }
@@ -312,6 +378,7 @@ impl Layer {
     pub fn color_at(self, generator: &Generator, coord: Coord) -> [u8; 4] {
         match self {
             Layer::Climate => climate_color(generator.tile(coord).climate),
+            Layer::Terrain => terrain_color(generator.tile(coord).terrain),
             Layer::Relief => color(generator.relief(coord)),
             other => color(other.of_sample(&generator.sample(coord))),
         }
@@ -322,8 +389,9 @@ impl Layer {
     /// # Panics
     ///
     /// Panics for [`Layer::Relief`], which a [`Sample`] does not carry, and for
-    /// [`Layer::Climate`], which is not a scalar. Private for that reason;
-    /// [`Layer::value`] and [`Layer::color_at`] are the total functions.
+    /// [`Layer::Climate`] and [`Layer::Terrain`], which are not scalars.
+    /// Private for that reason; [`Layer::value`] and [`Layer::color_at`] are
+    /// the total functions.
     fn of_sample(self, sample: &Sample) -> f64 {
         match self {
             Layer::Continentalness => sample.continentalness,
@@ -337,8 +405,11 @@ impl Layer {
             Layer::RegionInfluence => sample.regional_uplift,
             Layer::Temperature => sample.heat,
             Layer::Moisture => sample.moisture,
+            Layer::Basin => sample.basin_influence,
+            Layer::Volcanic => sample.volcanic,
             Layer::Relief => unreachable!("relief is not carried by a sample"),
             Layer::Climate => unreachable!("climate is not a scalar"),
+            Layer::Terrain => unreachable!("terrain is not a scalar"),
         }
     }
 }
@@ -1148,20 +1219,29 @@ mod tests {
     }
 
     #[test]
-    fn every_scalar_layer_has_a_scale_and_climate_has_none() {
+    fn every_scalar_layer_has_a_ramp_and_the_other_two_have_their_own_keys() {
         // The two partial functions on `Layer` must agree about which layers
         // are scalar. If they ever disagree, one of them has grown a variant
         // the other has not.
+        let generator = generator();
         for layer in Layer::ALL {
-            let generator = generator();
             assert_eq!(
-                layer.scale().is_some(),
+                matches!(layer.key(), Key::Ramp(_)),
                 layer.value(&generator, Coord::ORIGIN).is_some(),
                 "{}",
                 layer.name()
             );
+            assert_eq!(
+                layer.scale().is_some(),
+                matches!(layer.key(), Key::Ramp(_)),
+                "{}",
+                layer.name()
+            );
         }
+        assert_eq!(Layer::Climate.key(), Key::Climate);
+        assert_eq!(Layer::Terrain.key(), Key::Terrain);
         assert!(Layer::Climate.scale().is_none());
+        assert!(Layer::Terrain.scale().is_none());
     }
 
     #[test]
@@ -1194,8 +1274,8 @@ mod tests {
             assert_eq!(Layer::parse(layer.name()).expect("known layer"), layer);
         }
         assert!(matches!(
-            Layer::parse("terrain"),
-            Err(RenderError::UnknownLayer(name)) if name == "terrain"
+            Layer::parse("swamps"),
+            Err(RenderError::UnknownLayer(name)) if name == "swamps"
         ));
         assert!(Layer::parse("Continentalness").is_err());
     }

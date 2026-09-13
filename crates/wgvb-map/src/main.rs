@@ -183,13 +183,14 @@ mod tests {
     #[test]
     fn an_unknown_layer_is_rejected_and_lists_the_alternatives() {
         let error = Args::try_parse_from([
-            "wgvb-map", "--q", "0", "--r", "0", "--layer", "terrain", "--out", "m.png",
+            "wgvb-map", "--q", "0", "--r", "0", "--layer", "swamps", "--out", "m.png",
         ])
         .expect_err("an unknown layer is rejected");
         let message = error.to_string();
-        assert!(message.contains("terrain"), "{message}");
+        assert!(message.contains("swamps"), "{message}");
         assert!(message.contains("elevation-raw"), "{message}");
         assert!(message.contains("relief"), "{message}");
+        assert!(message.contains("terrain"), "{message}");
     }
 
     #[test]

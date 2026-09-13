@@ -66,6 +66,36 @@ pub(crate) fn from_neighbors(
     (mean / reference_delta_per_hex).clamp(0.0, 1.0)
 }
 
+/// How far a tile stands above its highest neighbor, in `[0, 1]`.
+///
+/// Zero anywhere that is not a strict local maximum — on a slope, in a saddle,
+/// on a plain — and one where the tile stands a full
+/// [`reference_delta_per_hex`] above the highest of the six. This is the "local
+/// peak structure" of `DESIGN.md` section 17, and it is the reason a volcano is
+/// rare without a per-tile draw: a strict local maximum is a property of the
+/// elevation field, so it is already coherent, already deterministic, and
+/// already scarce.
+///
+/// # Accumulation order
+///
+/// The maximum is taken over `0..6` in direction order. Maximum is associative
+/// and commutative for ordinary numbers, so the order does not change the
+/// result the way a sum's would — but section 25.3's rule is that the order is
+/// written down rather than left to a caller, and a later change from `max` to
+/// something that *is* order-sensitive should not have to rediscover that.
+#[must_use]
+pub(crate) fn peak_prominence(
+    here: f64,
+    neighbors: &[f64; DIRECTION_COUNT],
+    reference_delta_per_hex: f64,
+) -> f64 {
+    let mut highest = f64::NEG_INFINITY;
+    for neighbor in neighbors {
+        highest = highest.max(*neighbor);
+    }
+    ((here - highest) / reference_delta_per_hex).clamp(0.0, 1.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,6 +161,32 @@ mod tests {
                 assert!((0.0..=1.0).contains(&value), "{here} / {spread}");
             }
         }
+    }
+
+    #[test]
+    fn only_a_strict_local_maximum_has_prominence() {
+        // On a slope, in a saddle, and on flat ground the answer is exactly
+        // zero, not a small positive number.
+        let flat = [0.3; DIRECTION_COUNT];
+        assert_eq!(peak_prominence(0.3, &flat, REFERENCE), 0.0);
+
+        let slope = [0.29, 0.30, 0.31, 0.32, 0.33, 0.34];
+        assert_eq!(peak_prominence(0.31, &slope, REFERENCE), 0.0);
+
+        // A saddle: higher than four neighbors, lower than two.
+        let saddle = [0.29, 0.28, 0.35, 0.27, 0.26, 0.36];
+        assert_eq!(peak_prominence(0.30, &saddle, REFERENCE), 0.0);
+    }
+
+    #[test]
+    fn prominence_is_the_rise_over_the_highest_neighbor_against_the_reference() {
+        // Derived independently: the highest neighbor is 0.29, the tile is at
+        // 0.30, so the rise is 0.01 — half of a reference of 0.02.
+        let neighbors = [0.20, 0.29, 0.25, 0.10, 0.28, 0.05];
+        assert!((peak_prominence(0.30, &neighbors, REFERENCE) - 0.5).abs() < 1.0e-12);
+
+        // And a rise past the reference saturates rather than overflowing.
+        assert_eq!(peak_prominence(1.0, &neighbors, REFERENCE), 1.0);
     }
 
     #[test]

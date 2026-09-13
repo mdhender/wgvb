@@ -276,15 +276,35 @@ pub(crate) struct Fields {
     /// next to a dry slope, and a warp longer than the field itself would only
     /// translate the whole patch.
     pub(crate) moisture_variation: Field,
+
+    /// The broad basin field of `DESIGN.md` section 17.
+    ///
+    /// Warped with the geographic warp, like every other field at this scale,
+    /// so a basin bends with the continent it sits in.
+    pub(crate) basin_broad: Field,
+    /// The regional basin field.
+    pub(crate) basin_regional: Field,
+    /// The local basin field.
+    ///
+    /// The one basin scale small enough for the detail warp to mean anything,
+    /// and the scale at which a hollow is a hollow.
+    pub(crate) basin_local: Field,
+
+    /// The volcanic tendency field of `DESIGN.md` section 17.
+    ///
+    /// Geographic warp: a volcanic belt follows the crust it sits on, which is
+    /// the same crust the ridge structure follows.
+    pub(crate) volcanic: Field,
 }
 
 impl Fields {
     /// Composes the graph. Called once, from `Generator::new`.
     pub(crate) fn build(seed: crate::Seed, config: &crate::Config) -> Fields {
         use crate::hash::{
-            DOM_CONTINENTALNESS, DOM_DETAIL_WARP_X, DOM_DETAIL_WARP_Y, DOM_MOISTURE,
-            DOM_MOISTURE_VARIATION, DOM_REGIONAL_ELEVATION, DOM_RELIEF, DOM_RIDGE_STRUCTURE,
-            DOM_TEMPERATURE, DOM_TERRAIN_DETAIL, DOM_WARP_X, DOM_WARP_Y,
+            DOM_BASIN, DOM_BASIN_LOCAL, DOM_BASIN_REGIONAL, DOM_CONTINENTALNESS, DOM_DETAIL_WARP_X,
+            DOM_DETAIL_WARP_Y, DOM_MOISTURE, DOM_MOISTURE_VARIATION, DOM_REGIONAL_ELEVATION,
+            DOM_RELIEF, DOM_RIDGE_STRUCTURE, DOM_TEMPERATURE, DOM_TERRAIN_DETAIL, DOM_VOLCANIC,
+            DOM_WARP_X, DOM_WARP_Y,
         };
 
         // Every ladder of noise, in one shape: an fbm over one leaf, translated
@@ -387,6 +407,26 @@ impl Fields {
                 DOM_MOISTURE_VARIATION,
                 config.moisture_variation_wavelength_miles,
                 config.moisture_variation_octaves,
+            )),
+            basin_broad: warp(simplex_ladder(
+                DOM_BASIN,
+                config.basin_broad_wavelength_miles,
+                config.basin_broad_octaves,
+            )),
+            basin_regional: warp(simplex_ladder(
+                DOM_BASIN_REGIONAL,
+                config.basin_regional_wavelength_miles,
+                config.basin_regional_octaves,
+            )),
+            basin_local: detail_warp(simplex_ladder(
+                DOM_BASIN_LOCAL,
+                config.basin_local_wavelength_miles,
+                config.basin_local_octaves,
+            )),
+            volcanic: warp(simplex_ladder(
+                DOM_VOLCANIC,
+                config.volcanic_wavelength_miles,
+                config.volcanic_octaves,
             )),
         }
     }

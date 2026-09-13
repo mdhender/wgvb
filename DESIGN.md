@@ -848,6 +848,8 @@ Sea level may be configurable.
 
 Deterministic basin fields may classify some potential-land tiles as lakes or inland seas if the coherence requirements in section 17 are met. Otherwise the first implementation retains basin geography without inland-water classification. Both approaches must use bounded local sampling, never global connectivity or flood fill.
 
+The first implementation took the second path. See the decision record in section 17.1.
+
 If a target land fraction is desired, tune the continentalness distribution and sea-level threshold statistically. Do not calculate sea level from a finite sample at runtime.
 
 ---
@@ -954,6 +956,52 @@ Classify a basin as a lake or inland sea only if bounded local generation can gi
 Marsh and swamp are distinguished primarily by climate and vegetation tendency: marshes favor open saturated lowlands, swamps favor warmer or forested saturated lowlands. Volcanoes are rare products of regional volcanic tendency, uplift, and local peak structure, not independent random tile assignments.
 
 Terrain is an enum with pinned discriminants, on the same terms as section 14.1.
+
+### 17.1 Decision record — inland water is omitted
+
+**Phase 6 shipped basin geography and no inland water.** No world produced at
+`ALGORITHM_VERSION = 5` contains a tile classified `Lake` or `InlandSea`. The
+two variants stay in the vocabulary with their discriminants pinned, because
+they are part of the persisted value space and the version that does emit them
+must not renumber the twenty-one variants after them.
+
+The paragraph above permits inland water only where bounded local generation
+can give neighboring water tiles coherent membership, surface elevation, depth,
+and shorelines, and requires omission rather than approximation otherwise. It
+cannot, and the obstruction is structural:
+
+- A lake has **one** surface elevation. Every tile of one lake must agree on
+  it, or the water runs downhill inside itself and a tile's depth is not a
+  depth.
+- Which tiles are "one lake" is a **connected component** of the ground below
+  that surface. Finding it is a traversal whose extent is the lake's, which is
+  unbounded in principle — and sections 2.3 and 15 forbid global connectivity
+  and flood fill outright.
+- A *smooth* water-surface field, with a tile under water where its elevation
+  falls below it, is bounded and deterministic and visibly wrong: the surface
+  varies across the lake, so the lake is tilted, two hollows a few hexes apart
+  have different water levels, and the shoreline is where two smooth fields
+  happen to cross rather than a level line.
+- Giving each addressing cell a lake with a hashed surface elevation
+  reintroduces the hard region boundary of section 33.4, draws the lattice on
+  the map, and puts water on hillsides wherever the cell's elevation does not
+  match the ground.
+
+What ships instead is the geography. Basin influence exists at broad, regional,
+and local scales, blended with the region basin bias, and terrain reads it
+through a *product* rather than a sum: terrain wetness is
+`moisture + weight * basin * moisture`, so a basin makes a wet climate wetter
+and a dry one drier, and a rise sheds water either way. That is this section's
+own example — dry endorheic regions such as the Great Basin are valid
+geographic results — arriving as a consequence of the composition rather than
+as a special case. A wet basin reads as marsh, swamp, or bog. What is missing
+is open water in the middle.
+
+**Basin influence does not feed elevation, and must not.** A basin term inside
+the elevation composite is the obvious way to make a depression *be* lower
+ground, and it would move every tile in every world. The golden table in
+`crates/wgvb/tests/golden.rs` is what enforces the placement: phase 6 added
+three columns and moved none of the twelve that were already there.
 
 ---
 
@@ -1604,7 +1652,7 @@ Useful layers:
 
 ```text
 elevation, continentalness, temperature, moisture,
-relief, climate, terrain, region influence
+relief, climate, basin, volcanic, terrain, region influence
 ```
 
 This tool is essential for tuning. Build it early (phase 2), because visual quality cannot be established by unit tests.
@@ -1865,6 +1913,10 @@ fields; and terrain layers in the renderer.
 > **Exit:** terrain maps visually correspond to elevation and climate, and
 > boundaries look geographically plausible. Basin geography exists; inland water
 > is either coherent or deliberately omitted.
+
+**Done at `ALGORITHM_VERSION = 5`.** Inland water was deliberately omitted; see
+the decision record in section 17.1. Acceptance renders are in
+`docs/renders/v5`.
 
 ### Phase 7 — Persistence, player rendering, and tuning
 

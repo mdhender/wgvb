@@ -176,6 +176,11 @@ fn moving_sea_level_moves_the_land_fraction_the_way_it_should() {
     for sea_level in [-0.10, -0.05, 0.0, 0.05, 0.10] {
         let config = Config {
             sea_level,
+            // `ocean_level` is the rung below sea level — the cut between
+            // `ocean` and `shallow sea` inside the shallow-water band — and
+            // the ladder has to stay ordered when sea level moves down past
+            // where it started.
+            ocean_level: (Config::default().deep_water_level + sea_level) * 0.5,
             ..Config::default()
         };
         let generator = Generator::new(7, config).expect("configuration is valid");

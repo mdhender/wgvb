@@ -68,9 +68,27 @@ pub const DOM_RIDGE_ORIENTATION: u64 = domain(b"ridge-orientation");
 /// runs at a region anchor. This one is the continuous field whose zero
 /// crossings become the crests, sampled along that direction.
 pub const DOM_RIDGE_STRUCTURE: u64 = domain(b"ridge-structure");
-/// Domain: basin influence.
+/// Domain: the broad basin field, and the head of the basin family.
+///
+/// Section 17 asks for basin influence at broad, regional, and local scales.
+/// Three scales are three field nodes, and this crate gives one domain to one
+/// node — the same shape [`DOM_MOISTURE`] and [`DOM_MOISTURE_VARIATION`]
+/// already have, and for a sharper reason here. All three basin scales sample
+/// the same kind of noise, so sharing a domain between them would give them the
+/// same gradient table *and* the same seed-derived sampling offset, which is
+/// exactly one point — the world origin — where all three would land in the
+/// same lattice cell at the same fractional position and return the same value.
+/// Separate domains make that impossible rather than unlikely.
 pub const DOM_BASIN: u64 = domain(b"basin");
+/// Domain: the regional basin field. See [`DOM_BASIN`].
+pub const DOM_BASIN_REGIONAL: u64 = domain(b"basin-regional");
+/// Domain: the local basin field. See [`DOM_BASIN`].
+pub const DOM_BASIN_LOCAL: u64 = domain(b"basin-local");
 /// Domain: volcanic tendency.
+///
+/// The continuous field of section 17's volcanic term. It says where the crust
+/// is restless; a volcano additionally needs uplift and a local peak, so this
+/// field is one of three inputs and never a per-tile lottery on its own.
 pub const DOM_VOLCANIC: u64 = domain(b"volcanic");
 /// Domain: `x` component of the low-frequency domain warp. See `DESIGN.md`
 /// section 13.
@@ -254,6 +272,8 @@ mod tests {
         assert_eq!(DOM_RIDGE_ORIENTATION, 0x0f5b_ac88_66b1_037b);
         assert_eq!(DOM_RIDGE_STRUCTURE, 0xe29a_7e33_1d9b_a86c);
         assert_eq!(DOM_BASIN, 0xd6e8_5182_6dfb_0aa6);
+        assert_eq!(DOM_BASIN_REGIONAL, 0x203b_6931_0f71_797c);
+        assert_eq!(DOM_BASIN_LOCAL, 0x2c97_a5cf_22fb_c844);
         assert_eq!(DOM_VOLCANIC, 0x3208_6c8b_90c6_35b8);
         assert_eq!(DOM_WARP_X, 0xa1e1_8632_3c66_62fa);
         assert_eq!(DOM_WARP_Y, 0xa1e1_8732_3c66_64ad);
@@ -282,6 +302,8 @@ mod tests {
             DOM_RIDGE_ORIENTATION,
             DOM_RIDGE_STRUCTURE,
             DOM_BASIN,
+            DOM_BASIN_REGIONAL,
+            DOM_BASIN_LOCAL,
             DOM_VOLCANIC,
             DOM_WARP_X,
             DOM_WARP_Y,

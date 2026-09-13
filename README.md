@@ -19,7 +19,7 @@ The world is a wrapped hexagonal address space of 3,221,127,169 tiles at a
 
 ## Status
 
-Phases 1 through 5 of `DESIGN.md` section 32 are implemented.
+Phases 1 through 6 of `DESIGN.md` section 32 are implemented.
 
 **Phase 1 — coordinates and hashing.** Canonical wrapped coordinates, the six
 pinned direction vectors and 60-degree rotation, chunk and region addressing,
@@ -73,22 +73,46 @@ cargo run --release -p wgvb-map -- \
     --hex-radius 1 --layer climate --out climate.png
 ```
 
-Layers available now are `continentalness`, `regional`, `local`, `detail`,
-`elevation-raw`, `elevation`, `relief`, `ridge`, `roughness`,
-`region-influence`, `temperature`, `moisture`, and `climate`. Output is
-diagnostic: it is driven by an in-memory generator and does not represent a
-saved world, and `elevation-raw` is the unshaped multi-scale composite rather
-than the elevation of a `Tile`.
-
 Climate is built at a scale a window has to be wide to show — a zone is
 thousands of hexes across — so the contact sheets in `docs/renders/v4` are the
 evidence phase 5 met its exit condition, alongside the measurements in
 `crates/wgvb/tests/climate.rs`.
 
-Terrain classification is not implemented: `Tile::terrain` is still derived from
-the elevation band alone and carries no climate information, which is why there
-is no terrain layer. Terrain is phase 6 and persistence is phase 7; `DESIGN.md`
-is the specification and section 32 has the ordered phase plan.
+**Phase 6 — basins and terrain.** `Tile` is complete: every tile now carries a
+`Terrain` as well, classified from elevation, relief, climate, basin influence,
+volcanic tendency, and the six neighboring elevations — never from a per-tile
+draw. Basin influence is three deterministic fields at broad, regional, and
+local scale blended with the region's basin bias, using bounded local sampling
+and no connectivity or flood fill anywhere. Terrain reads it through a product,
+`moisture + weight * basin * moisture`, so a basin makes a wet climate wetter
+and a dry one drier and an endorheic basin is a salt flat rather than a lake.
+
+```sh
+cargo run --release -p wgvb-map -- \
+    --seed 81985529216486895 --q 11000 --r -4500 --cols 1201 --rows 901 \
+    --hex-radius 1 --layer terrain --out terrain.png
+```
+
+**Inland water is deliberately omitted.** No world this version generates
+contains a `Lake` or an `InlandSea`. A coherent lake needs one surface
+elevation shared by every tile of one basin, and knowing which tiles those are
+is connectivity — which sections 2.3 and 15 forbid. `DESIGN.md` section 17.1 is
+the decision record, with the two approximations that were considered and
+rejected. The variants stay in the vocabulary with their discriminants pinned.
+
+Layers available now are `continentalness`, `regional`, `local`, `detail`,
+`elevation-raw`, `elevation`, `relief`, `ridge`, `roughness`,
+`region-influence`, `temperature`, `moisture`, `climate`, `basin`, `volcanic`,
+and `terrain`. Output is diagnostic: it is driven by an in-memory generator and
+does not represent a saved world, and `elevation-raw` is the unshaped
+multi-scale composite rather than the elevation of a `Tile`.
+
+The contact sheets in `docs/renders/v5` are the evidence phase 6 met its exit
+condition, alongside the measurements in `crates/wgvb/tests/terrain.rs` and
+`crates/wgvb/tests/basin.rs`.
+
+Persistence is phase 7; `DESIGN.md` is the specification and section 32 has the
+ordered phase plan.
 
 ## Looking at a seed
 
