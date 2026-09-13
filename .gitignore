@@ -1,0 +1,17 @@
+/target
+**/*.rs.bk
+*.profraw
+
+# generated worlds and diagnostic output
+*.wgvb
+*.png
+
+*~
+*.swp
+
+# editor and agent files
+.amp/
+.claude/
+.idea/
+.vscode/
+*-prompt*.md

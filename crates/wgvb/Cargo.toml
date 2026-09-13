@@ -1,0 +1,19 @@
+[package]
+name = "wgvb"
+description = "Deterministic, effectively unbounded procedural hex-world generator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+# The core generator has no persistence, no rendering, and no hex-geometry
+# dependency. This is enforced by the dependency graph, not by convention:
+# see DESIGN.md section 28.
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true

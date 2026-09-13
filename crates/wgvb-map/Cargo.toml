@@ -1,0 +1,22 @@
+[package]
+name = "wgvb-map"
+description = "Diagnostic and player-facing map renderer for WGVB"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "wgvb-map"
+path = "src/main.rs"
+
+[dependencies]
+wgvb.workspace = true
+wgvb-store.workspace = true
+wgvb-render.workspace = true
+clap.workspace = true
+
+[lints]
+workspace = true

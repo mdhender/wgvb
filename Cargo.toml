@@ -1,0 +1,51 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/wgvb",
+    "crates/wgvb-store",
+    "crates/wgvb-render",
+    "crates/wgvb-map",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+authors = ["Michael D Henderson"]
+repository = "https://github.com/mdhender/wgvb"
+
+# Every dependency the design has decided on, pinned here so member crates
+# opt in with `dep.workspace = true` and no two crates can drift versions.
+# See DESIGN.md appendix B for why each was chosen.
+[workspace.dependencies]
+wgvb = { path = "crates/wgvb" }
+wgvb-store = { path = "crates/wgvb-store" }
+wgvb-render = { path = "crates/wgvb-render" }
+
+thiserror = "2.0"
+serde = { version = "1.0", features = ["derive"] }
+ciborium = "0.2"
+sha2 = "0.11"
+rusqlite = { version = "0.40", features = ["bundled"] }
+png = "0.18"
+hexx = "0.25"
+rayon = "1.12"
+clap = { version = "4.6", features = ["derive"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+# Determinism guardrails. The generation path must not perform an implicit
+# fused multiply-add, a lossy numeric cast, or an unchecked arithmetic
+# conversion. See DESIGN.md section 25.
+cast_possible_truncation = "warn"
+cast_precision_loss = "warn"
+cast_sign_loss = "warn"
+suboptimal_flops = "allow"
+
+# Release profile keeps the default IEEE-754 semantics. Do not add any
+# flag here that relaxes floating-point behavior.
+[profile.release]
+debug = 1

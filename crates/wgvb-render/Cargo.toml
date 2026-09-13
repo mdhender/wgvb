@@ -1,0 +1,18 @@
+[package]
+name = "wgvb-render"
+description = "Bounded viewport rendering for WGVB worlds"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+wgvb.workspace = true
+thiserror.workspace = true
+hexx.workspace = true
+png.workspace = true
+
+[lints]
+workspace = true
