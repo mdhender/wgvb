@@ -18,10 +18,18 @@ pub const DIRECTION_COUNT: usize = 6;
 /// The six canonical direction vectors in axial form, pinned by the algorithm
 /// version.
 ///
-/// Increasing the direction index by one moves clockwise to the next neighbor;
-/// decreasing it moves counter-clockwise. The cube form is `(q, r, -q - r)`.
-/// See `DESIGN.md` appendix A — changing or renumbering this table changes every
-/// world and is an algorithm compatibility change.
+/// Increasing the index by one steps to the next neighbor counter-clockwise, in
+/// the order Red Blob Games gives them; decreasing it steps clockwise. The cube
+/// form is `(q, r, -q - r)`. See `DESIGN.md` appendix A — changing or
+/// renumbering this table changes every world and is an algorithm compatibility
+/// change.
+///
+/// This crate has no north, so it has no compass and no reliable sense of
+/// clockwise: those are properties of a *viewer*, and a viewer lives in the
+/// presentation layer. Everything here is index arithmetic, `(d + 1) mod 6`.
+/// Appendix A's *Rotation senses* is the one place the two are reconciled —
+/// read it before writing "clockwise" in a comment anywhere in this crate,
+/// because the compass walk a player sees runs the *other* way, `d - 1`.
 ///
 /// | Direction | Cube `(q, r, s)` | Axial `(q, r)` |
 /// |---:|---|---|
@@ -53,12 +61,17 @@ pub const fn direction_index(direction: i32) -> usize {
     direction.rem_euclid(6).cast_unsigned() as usize
 }
 
-/// One step clockwise on the cube form: direction `d` becomes direction `d + 1`.
+/// One step in index order on the cube form: direction `d` becomes `d + 1`.
 ///
 /// This is an exact integer permutation with sign changes — no rotation matrix
 /// and no angle — so it is available anywhere in the generation path without
 /// violating the exact-operation rule in `DESIGN.md` section 25.2. Six
-/// applications are the identity. Counter-clockwise is `(x, y, z) -> (-y, -z, -x)`.
+/// applications are the identity. The inverse step is `(x, y, z) -> (-y, -z, -x)`.
+///
+/// **The `_cw` in the name is historical and misleading.** Advancing the index
+/// turns *counter*-clockwise as any viewer sees the world; the name is
+/// clockwise only under a plot of canonical world space with `+y` upward, which
+/// nothing here draws. See `DESIGN.md` appendix A, *Rotation senses*.
 ///
 /// The same function generates [`mirror_centers`], which is why it is written
 /// once here instead of transcribing six triples by hand.
@@ -169,8 +182,8 @@ impl Coord {
         )
     }
 
-    /// This coordinate rotated `steps` sixths of a turn clockwise about the
-    /// canonical origin.
+    /// This coordinate rotated `steps` sixths of a turn about the canonical
+    /// origin, in the direction of increasing direction index.
     ///
     /// Exact integer arithmetic, and the canonical domain is six-fold symmetric
     /// about the origin, so rotation maps it onto itself and commutes with
@@ -178,6 +191,10 @@ impl Coord {
     /// `absolute = normalize(rotate_cw^k(relative) + player_origin)`; the
     /// player's origin, rotation, and any compass naming belong to the
     /// presentation layer. See `DESIGN.md` appendix A.
+    ///
+    /// One step is counter-clockwise as a viewer sees it, despite the name —
+    /// appendix A's *Rotation senses* explains why the name says otherwise and
+    /// why the compass walk a player reads runs the opposite way.
     #[inline]
     #[must_use]
     pub fn rotate_cw(self, steps: i32) -> Coord {
@@ -471,10 +488,13 @@ mod tests {
     }
 
     #[test]
-    fn counter_clockwise_is_the_inverse_of_clockwise() {
-        let ccw = |(x, y, z): (i64, i64, i64)| (-y, -z, -x);
+    fn the_inverse_step_undoes_one_step_in_index_order() {
+        // Named for the index rather than for a rotation sense: the compass
+        // words belong to a viewer, and this crate has none. Appendix A,
+        // *Rotation senses*.
+        let back = |(x, y, z): (i64, i64, i64)| (-y, -z, -x);
         for d in 0..DIRECTION_COUNT {
-            assert_eq!(ccw(rotate_cw(direction_cube(d))), direction_cube(d));
+            assert_eq!(back(rotate_cw(direction_cube(d))), direction_cube(d));
         }
     }
 

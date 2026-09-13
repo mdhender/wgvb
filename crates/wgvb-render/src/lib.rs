@@ -587,6 +587,90 @@ mod tests {
         assert_eq!(to_hex(Component::MAX, Component::MIN).y, -32_768);
     }
 
+    /// Which way the pixel offset from a cell to a neighbor points on screen.
+    ///
+    /// The image `y` axis increases downward, so a negative `dy` is north.
+    fn compass_of(dx: f32, dy: f32) -> &'static str {
+        let vertical = if dy < 0.0 { "N" } else { "S" };
+        if dx.abs() < 0.001 {
+            return vertical;
+        }
+        match (dx > 0.0, dy < 0.0) {
+            (true, true) => "NE",
+            (true, false) => "SE",
+            (false, true) => "NW",
+            (false, false) => "SW",
+        }
+    }
+
+    #[test]
+    fn the_compass_walk_is_clockwise_and_decreases_the_direction_index() {
+        // `DESIGN.md` appendix A, *Rotation senses*, pinned rather than
+        // described. Two claims live here, and both are about the picture
+        // rather than about the world:
+        //
+        // 1. This layout draws the admin frame, whose north is absolute
+        //    direction 2. Nothing rotates; north is direction 2 because the
+        //    flat-top layout puts `(0, -1)` at the top of the image.
+        // 2. Reading the compass clockwise — N, NE, SE, S, SW, NW — walks the
+        //    direction index *backwards*, because index order is
+        //    counter-clockwise as a viewer sees it.
+        //
+        // A layout change that mirrored the image would keep every golden
+        // pixel test passing while making every heading the game prints point
+        // the wrong way. This is the test that would fail.
+        let expected: [(&str, i32); 6] = [
+            ("N", 2),
+            ("NE", 1),
+            ("SE", 0),
+            ("S", 5),
+            ("SW", 4),
+            ("NW", 3),
+        ];
+
+        // An odd window so the centre cell is exact, and both column parities
+        // are exercised by running the check at two adjacent centres: the
+        // even-`q` offset scheme shoves alternate columns down, so the
+        // *offset* neighbors of a cell depend on its column parity even though
+        // the axial ones do not.
+        let viewport = Viewport::new(Coord::new(0, 0), 9, 9, 8.0).expect("a valid viewport");
+        for (centre_col, centre_row) in [(4_u32, 4_u32), (5, 4)] {
+            let centre = viewport.coord_at(centre_col, centre_row);
+            let (cx, cy) = viewport.pixel_center(centre_col, centre_row);
+
+            for (compass, direction) in expected {
+                let neighbor = centre.neighbor(direction);
+                let (col, row) = (0..9)
+                    .flat_map(|col| (0..9).map(move |row| (col, row)))
+                    .find(|(col, row)| viewport.coord_at(*col, *row) == neighbor)
+                    .expect("every neighbor of the centre is inside a nine-by-nine window");
+                let (nx, ny) = viewport.pixel_center(col, row);
+                assert_eq!(
+                    compass_of(nx - cx, ny - cy),
+                    compass,
+                    "direction {direction} from ({centre_col}, {centre_row}) \
+                     is not {compass} on screen"
+                );
+            }
+        }
+
+        // The walk itself: clockwise on screen is one step back through the
+        // index, six times, returning where it started.
+        for window in expected.windows(2) {
+            let (from, to) = (window[0].1, window[1].1);
+            assert_eq!(
+                to,
+                (from - 1).rem_euclid(6),
+                "the compass walk does not decrease the index"
+            );
+        }
+        assert_eq!(
+            (expected[5].1 - 1).rem_euclid(6),
+            expected[0].1,
+            "the compass walk does not close"
+        );
+    }
+
     #[test]
     fn the_two_direction_tables_run_in_opposite_senses() {
         // `hexx_index = (-d).rem_euclid(6)`. The tables agree only at 0 and 3,

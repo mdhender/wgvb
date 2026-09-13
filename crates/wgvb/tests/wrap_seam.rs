@@ -70,7 +70,7 @@ fn mirror_centers() -> [(i64, i64); 6] {
     let mut out = [(0_i64, 0_i64); 6];
     for slot in &mut out {
         *slot = (cube.0, cube.1);
-        // One step clockwise: (x, y, z) -> (-z, -x, -y).
+        // One step in index order: (x, y, z) -> (-z, -x, -y).
         cube = (-cube.2, -cube.0, -cube.1);
     }
     out

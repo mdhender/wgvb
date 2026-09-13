@@ -1595,6 +1595,14 @@ This tool is essential for tuning. Build it early (phase 2), because visual qual
 
 Rendering notes:
 
+- **The renderer is where north exists.** It draws the admin frame: flat-top,
+  image `y` downward, no rotation, which puts absolute direction `2` at the top
+  of the image. Reading the compass clockwise from there — N, NE, SE, S, SW, NW
+  — walks the direction index backwards, `2, 1, 0, 5, 4, 3`, because index order
+  is counter-clockwise as a viewer sees it. Appendix A's *Rotation senses* is
+  the whole story and the one place to change it; a test in `wgvb-render` pins
+  the mapping, because a mirrored layout would keep every golden pixel passing
+  while sending every printed heading the wrong way.
 - Use `hexx` layouts and polygon corners for pixel geometry, and the `png` crate
   for encoding. Never let renderer pixel coordinates feed back into generation.
 - Render coordinates in a stable sorted order. Overlapping edges and labels make
@@ -1867,7 +1875,9 @@ At that point WGVB will retain the operational simplicity of the original Maraja
 
 ## Appendix A — Direction Vectors
 
-The six canonical directions are numbered `0` through `5`. Increasing the direction by one moves clockwise to the next neighbor; decreasing it moves counter-clockwise. This ordering is independent of whether a renderer draws flat-top or pointy-top hexes.
+The six canonical directions are numbered `0` through `5`, in the order Red Blob Games gives them. Increasing the index by one steps to the next neighbor **counter-clockwise**; decreasing it steps clockwise. This ordering is independent of whether a renderer draws flat-top or pointy-top hexes.
+
+**"Clockwise" is a word about a picture, and this document uses it for exactly one thing:** walking the ring of neighbors as a viewer sees them, starting at that viewer's north and proceeding N, NE, SE, S, SW, NW. See *Rotation senses* below, which is the section to read before writing the word in a comment.
 
 The six vectors are pinned by the algorithm version. They are world data, not a
 rendering detail, because the per-player rotation below is defined as arithmetic
@@ -1903,18 +1913,18 @@ Values differing by a multiple of six identify the same direction:
 
 | Input | Normalized | Movement from direction 0 |
 |---:|---:|---|
-| `7` | `1` | One step clockwise |
-| `6` | `0` | Full turn clockwise |
-| `-1` | `5` | One step counter-clockwise |
-| `-2` | `4` | Two steps counter-clockwise |
-| `-6` | `0` | Full turn counter-clockwise |
+| `7` | `1` | One step in index order |
+| `6` | `0` | Full turn |
+| `-1` | `5` | One step against index order |
+| `-2` | `4` | Two steps against index order |
+| `-6` | `0` | Full turn |
 
 Direction iteration in any accumulating context must use fixed order `0..6`. See section 25.3.
 
 ### Rotation
 
-One step clockwise — direction `d` to `d + 1` — is an exact permutation with sign
-changes on the cube form:
+One step in index order — direction `d` to `d + 1` — is an exact permutation with
+sign changes on the cube form:
 
 ```rust
 const fn rotate_cw(v: (i64, i64, i64)) -> (i64, i64, i64) {
@@ -1924,7 +1934,13 @@ const fn rotate_cw(v: (i64, i64, i64)) -> (i64, i64, i64) {
 ```
 
 `rotate_cw(direction[d]) == direction[(d + 1) % 6]` for all six, and six
-applications are the identity. Counter-clockwise is `(x, y, z) -> (-y, -z, -x)`.
+applications are the identity. The inverse step is `(x, y, z) -> (-y, -z, -x)`.
+
+**The `_cw` in the name is a hazard, not a fact.** The function advances the
+index, and advancing the index turns counter-clockwise in every frame this
+project presents. The name is clockwise only under a plot of canonical world
+space with `+y` upward, which is not a plot anything here draws. Read it as
+"one step in index order" wherever it appears, and see *Rotation senses*.
 
 This is integer-exact, so it is available everywhere in the generation path
 without violating section 25.2 — there is no rotation matrix and no angle.
@@ -1937,6 +1953,59 @@ which is what the `i64` intermediate rule in section 4 protects.
 
 Because the canonical domain is six-fold symmetric about the origin, `rotate_cw`
 maps it onto itself: rotation commutes with normalization.
+
+### Rotation senses
+
+Two different rotations are in play and they run opposite ways. Conflating them
+has already cost one round of confusion, so both are written out here.
+
+**Index order is counter-clockwise.** The table above is Red Blob Games' order:
+`direction[0]` is `(+1, 0, -1)` and `direction[1]` is `(+1, -1, 0)`, and as any
+viewer sees the world, that second vector is one sixth of a turn
+*counter-clockwise* from the first. `Coord::rotate_cw(1)` and the `d + 1` in
+`neighbor(d + 1)` both move that way.
+
+**The compass ring is clockwise.** A viewer's six neighbors, named the way a
+person names them, are N, NE, SE, S, SW, NW — a clockwise walk that starts at
+whatever direction is *that viewer's* north. Because index order runs the other
+way, the compass walk **decreases** the index:
+
+| Compass | Absolute direction | Player-relative direction |
+|---|---|---|
+| N  | `k`     | `0` |
+| NE | `k - 1` | `5` |
+| SE | `k - 2` | `4` |
+| S  | `k - 3` | `3` |
+| SW | `k - 4` | `2` |
+| NW | `k - 5` | `1` |
+
+all `mod 6`, for a viewer at rotation `k`. The player-relative column is the
+same for every viewer, which is the point: **the clockwise compass walk is
+always `0, 5, 4, 3, 2, 1` in the viewer's own numbering**, whatever their
+rotation is, and `3` is always behind them.
+
+**The admin frame is rotation 2.** The diagnostic renderer applies no rotation,
+and its flat-top layout puts absolute direction `2` at the top of the image, so
+what it draws is a viewer at `k = 2`. The compass walk there is absolute
+`2, 1, 0, 5, 4, 3`:
+
+| Compass | N | NE | SE | S | SW | NW |
+|---|---:|---:|---:|---:|---:|---:|
+| Absolute direction | 2 | 1 | 0 | 5 | 4 | 3 |
+| Axial step | `(0, -1)` | `(+1, -1)` | `(+1, 0)` | `(0, +1)` | `(-1, +1)` | `(-1, 0)` |
+
+Rules that follow:
+
+- **The generator says neither word.** Nothing under `crates/wgvb` has a north,
+  so nothing under it needs "clockwise": the core crate deals in direction
+  *indices* and the arithmetic `(d + 1) mod 6`. A comment there that says
+  clockwise is describing a picture the crate cannot see.
+- **Presentation and player-facing text say only "clockwise", never an index
+  direction.** A heading printed to a player, a compass rose, a scroll control,
+  a "turn right" — all of them mean the compass walk above, which is index
+  minus one.
+- Both senses are exact integer arithmetic on indices. Neither is an angle, and
+  section 25.2 is untroubled by either.
 
 ### Coordinate frames
 
@@ -1953,6 +2022,12 @@ One player's `(0, 0)` is not another's, and their norths may differ: rotation is
 direction offset, so a player at rotation `k` perceives absolute direction `k` as
 north. Two players can describe the same tile with different coordinates and the
 same heading with different direction numbers.
+
+The presented layout is pinned, because "north" is meaningless without it:
+**flat-top hexes, image `y` increasing downward, the frame's north at the top of
+the image.** Flat-top is what makes north a neighbor at all — a flat-top hex has
+neighbors directly above and below it, a pointy-top one does not — so the six
+compass names in *Rotation senses* exist only in this layout.
 
 The transform is exact integer arithmetic:
 
