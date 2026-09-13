@@ -24,12 +24,12 @@ ordered phase plan.
 
 ## Workspace
 
-| Crate | Purpose |
-|---|---|
-| `wgvb` | Core generator. Stateless, no persistence, no rendering. |
-| `wgvb-store` | Single-world SQLite persistence. |
-| `wgvb-render` | Bounded viewport rendering to PNG. |
-| `wgvb-map` | Diagnostic and player-facing CLI. |
+| Crate         | Purpose                                                  |
+|---------------|----------------------------------------------------------|
+| `wgvb`        | Core generator. Stateless, no persistence, no rendering. |
+| `wgvb-store`  | Single-world SQLite persistence.                         |
+| `wgvb-render` | Bounded viewport rendering to PNG.                       |
+| `wgvb-map`    | Diagnostic and player-facing CLI.                        |
 
 ## Documents
 
