@@ -6,6 +6,11 @@
 *.wgvb
 *.png
 
+# ...except the acceptance renders, which are kept deliberately: some changes
+# are accepted on images rather than on a green test suite, and the images that
+# accepted them are part of the record. See docs/renders/*/README.md.
+!docs/renders/**/*.png
+
 *~
 *.swp
 
