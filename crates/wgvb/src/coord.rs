@@ -68,21 +68,25 @@ pub const fn direction_index(direction: i32) -> usize {
 /// violating the exact-operation rule in `DESIGN.md` section 25.2. Six
 /// applications are the identity. The inverse step is `(x, y, z) -> (-y, -z, -x)`.
 ///
-/// **The `_cw` in the name is historical and misleading.** Advancing the index
-/// turns *counter*-clockwise as any viewer sees the world; the name is
-/// clockwise only under a plot of canonical world space with `+y` upward, which
-/// nothing here draws. See `DESIGN.md` appendix A, *Rotation senses*.
+/// Named for the index rather than for a rotation sense, because the sense
+/// depends on who is looking: advancing the index turns *counter*-clockwise as
+/// any viewer sees the world, and clockwise only under a plot of canonical
+/// world space with `+y` upward, which nothing here draws. The old name,
+/// `rotate_cw`, was wrong twice over — it named a sense that holds in no frame
+/// this project presents, in an abbreviation that reads as either "clockwise"
+/// or "compass walk". Those two run opposite ways through the index; see
+/// `DESIGN.md` appendix A, *Rotation senses*, and do not bring `cw` back.
 ///
 /// The same function generates [`mirror_centers`], which is why it is written
 /// once here instead of transcribing six triples by hand.
 #[inline]
-const fn rotate_cw(v: (i64, i64, i64)) -> (i64, i64, i64) {
+const fn rotate_once(v: (i64, i64, i64)) -> (i64, i64, i64) {
     let (x, y, z) = v;
     (-z, -x, -y)
 }
 
 /// The six mirror centers for a wrapped hexagonal map of radius `n`: the
-/// rotations of `(2n+1, -n, -n-1)` under [`rotate_cw`].
+/// rotations of `(2n+1, -n, -n-1)` under [`rotate_once`].
 ///
 /// Every center sums to zero and the sequence closes after six steps. For
 /// `n = i16::MAX` two of the six have components at `±65535`, outside
@@ -94,7 +98,7 @@ const fn mirror_centers(n: i64) -> [(i64, i64, i64); DIRECTION_COUNT] {
     let mut i = 0;
     while i < DIRECTION_COUNT {
         out[i] = v;
-        v = rotate_cw(v);
+        v = rotate_once(v);
         i += 1;
     }
     out
@@ -188,21 +192,23 @@ impl Coord {
     /// Exact integer arithmetic, and the canonical domain is six-fold symmetric
     /// about the origin, so rotation maps it onto itself and commutes with
     /// normalization. This is the world-frame half of the player transform
-    /// `absolute = normalize(rotate_cw^k(relative) + player_origin)`; the
+    /// `absolute = normalize(rotate^k(relative) + player_origin)`; the
     /// player's origin, rotation, and any compass naming belong to the
     /// presentation layer. See `DESIGN.md` appendix A.
     ///
-    /// One step is counter-clockwise as a viewer sees it, despite the name —
-    /// appendix A's *Rotation senses* explains why the name says otherwise and
-    /// why the compass walk a player reads runs the opposite way.
+    /// `steps` is signed and unbounded; it is normalized like any direction.
+    /// One step is counter-clockwise as a viewer sees it, so the compass walk a
+    /// player reads — N, NE, SE, S, SW, NW — runs the opposite way, at `-1` a
+    /// step. Appendix A's *Rotation senses* is the whole of it, and is why this
+    /// method names an index step rather than a rotation sense.
     #[inline]
     #[must_use]
-    pub fn rotate_cw(self, steps: i32) -> Coord {
+    pub fn rotate(self, steps: i32) -> Coord {
         let mut v = (i64::from(self.q), i64::from(self.r), i64::from(self.s()));
         let mut i = 0;
         let steps = direction_index(steps);
         while i < steps {
-            v = rotate_cw(v);
+            v = rotate_once(v);
             i += 1;
         }
         Coord::new(v.0, v.1)
@@ -460,10 +466,10 @@ mod tests {
     }
 
     #[test]
-    fn rotate_cw_advances_one_direction() {
+    fn one_step_advances_the_direction_index() {
         for d in 0..DIRECTION_COUNT {
             assert_eq!(
-                rotate_cw(direction_cube(d)),
+                rotate_once(direction_cube(d)),
                 direction_cube((d + 1) % 6),
                 "direction {d}"
             );
@@ -475,14 +481,14 @@ mod tests {
         for d in 0..DIRECTION_COUNT {
             let mut v = direction_cube(d);
             for _ in 0..6 {
-                v = rotate_cw(v);
+                v = rotate_once(v);
             }
             assert_eq!(v, direction_cube(d));
         }
         // And on a value that is not a direction vector.
         let mut v = (12_345, -7, -12_338);
         for _ in 0..6 {
-            v = rotate_cw(v);
+            v = rotate_once(v);
         }
         assert_eq!(v, (12_345, -7, -12_338));
     }
@@ -494,7 +500,7 @@ mod tests {
         // *Rotation senses*.
         let back = |(x, y, z): (i64, i64, i64)| (-y, -z, -x);
         for d in 0..DIRECTION_COUNT {
-            assert_eq!(back(rotate_cw(direction_cube(d))), direction_cube(d));
+            assert_eq!(back(rotate_once(direction_cube(d))), direction_cube(d));
         }
     }
 
@@ -528,7 +534,7 @@ mod tests {
             let mut v = centers[0];
             for (i, center) in centers.iter().enumerate() {
                 assert_eq!(v, *center, "rotation {i} of radius {n}");
-                v = rotate_cw(v);
+                v = rotate_once(v);
             }
             assert_eq!(v, centers[0], "six rotations must close");
         }
@@ -666,7 +672,7 @@ mod tests {
             let direction = i32::try_from(d).unwrap();
             // A coordinate on the edge that direction d leaves through: rotate
             // the +q edge midpoint into place.
-            let edge = Coord::new(n, 0).rotate_cw(direction);
+            let edge = Coord::new(n, 0).rotate(direction);
             let stepped = edge.neighbor(direction);
             let raw_q = i64::from(edge.q()) + i64::from(*dq);
             let raw_r = i64::from(edge.r()) + i64::from(*dr);
@@ -869,18 +875,15 @@ mod tests {
                 // normalizing then rotating.
                 let mut rotated = (q, r, -q - r);
                 for _ in 0..k {
-                    rotated = rotate_cw(rotated);
+                    rotated = rotate_once(rotated);
                 }
                 let rotate_first = Coord::new(rotated.0, rotated.1);
-                let normalize_first = Coord::new(q, r).rotate_cw(k);
+                let normalize_first = Coord::new(q, r).rotate(k);
                 assert_eq!(rotate_first, normalize_first, "({q}, {r}) rotated {k}");
             }
             // Six rotations are the identity on Coord too.
-            assert_eq!(Coord::new(q, r).rotate_cw(6), Coord::new(q, r));
-            assert_eq!(
-                Coord::new(q, r).rotate_cw(-1).rotate_cw(1),
-                Coord::new(q, r)
-            );
+            assert_eq!(Coord::new(q, r).rotate(6), Coord::new(q, r));
+            assert_eq!(Coord::new(q, r).rotate(-1).rotate(1), Coord::new(q, r));
         }
     }
 
@@ -889,7 +892,7 @@ mod tests {
         // The player-frame rule: absolute_direction = (player_direction + k) % 6.
         for k in 0..6 {
             for d in 0..6 {
-                let rotated = Coord::ORIGIN.neighbor(d).rotate_cw(k);
+                let rotated = Coord::ORIGIN.neighbor(d).rotate(k);
                 assert_eq!(
                     rotated,
                     Coord::ORIGIN.neighbor(d + k),
