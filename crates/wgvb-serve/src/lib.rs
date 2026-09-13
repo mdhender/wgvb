@@ -95,6 +95,27 @@ pub const DEFAULT_HOST: &str = "127.0.0.1";
 /// The default port.
 pub const DEFAULT_PORT: u16 = 8080;
 
+/// Revision of the viewer page's markup.
+///
+/// [`wgvb::ALGORITHM_VERSION`] covers the world and
+/// [`wgvb_render::RENDER_VERSION`] covers the pixels, and between them they
+/// said nothing at all about the HTML — so a release that changed the page
+/// and nothing else emitted the same strong `ETag` for different bytes, and a
+/// browser holding the old page went on showing it. That is exactly what a
+/// strong validator is supposed to make impossible, and it is the server's
+/// own to fix because the markup is the server's own.
+///
+/// Bump this whenever the page's markup changes. It is not an algorithm
+/// version: it invalidates a cached page and nothing else, and it does not
+/// appear in the image tag at all.
+///
+/// # History
+///
+/// - **1** — the viewer as phase 5 shipped it.
+/// - **2** — the center-tile readout. The page now says what is *at* the
+///   coordinate it centers on rather than only naming the coordinate.
+pub const PAGE_VERSION: u32 = 2;
+
 /// Workers to run when the caller does not say: one per available core.
 #[must_use]
 pub fn default_workers() -> usize {

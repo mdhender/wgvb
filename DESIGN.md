@@ -1751,11 +1751,25 @@ forget it than a CLI:
 - **Bind to `127.0.0.1` by default.** This is a diagnostic tool with no
   authentication and an endpoint whose cost the caller chooses. A `--host` flag
   exists; the default must not be `0.0.0.0`.
+- **The page names the tile at its center**, not only the coordinate: the
+  terrain, the elevation band, the two climate bands, and the scalars they
+  were classified from. A link to a window is otherwise a link to a picture,
+  and a reader has to count swatches against the key to find out what they are
+  looking at. It costs one tile against the `cols * rows` the image beside it
+  costs.
 - The PNG is a pure function of seed, center, window, layer, `ALGORITHM_VERSION`
   and `RENDER_VERSION`, so it carries a strong `ETag` built from exactly those.
   That is the validity rule section 26 states for any cached render, and it
   costs one header. The configuration fingerprint of section 21.2 joins that
   list the moment a configuration can vary.
+- **The page is a second representation and needs a revision of its own.** The
+  two versions above describe the world and the pixels and say nothing about
+  the HTML, so a release that changes the markup alone emits the same strong
+  tag for different bytes and a browser goes on showing the old page — which
+  is the one thing a strong validator exists to prevent. `PAGE_VERSION` in
+  `wgvb-serve` is that revision; it appears in the page tag and deliberately
+  not in the image tag, so changing the markup does not invalidate a cached
+  PNG.
 
 The HTTP stack is `tiny_http` and a fixed worker pool rather than `axum` and
 `tokio`. The work is CPU-bound rendering with no IO to overlap, so an async

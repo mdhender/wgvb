@@ -40,6 +40,33 @@ pub enum Elevation {
 }
 
 impl Elevation {
+    /// Every band, lowest first — which is also discriminant order.
+    ///
+    /// Exists for the same reason [`HeatBand::ALL`] does: a front end has to
+    /// be able to name the bands, and a list kept somewhere else is a list
+    /// that can quietly lose one.
+    pub const ALL: [Elevation; 6] = [
+        Elevation::DeepWater,
+        Elevation::ShallowWater,
+        Elevation::Lowland,
+        Elevation::Upland,
+        Elevation::Highland,
+        Elevation::Mountain,
+    ];
+
+    /// The band's name, lowercase, for a legend or a readout.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Elevation::DeepWater => "deep water",
+            Elevation::ShallowWater => "shallow water",
+            Elevation::Lowland => "lowland",
+            Elevation::Upland => "upland",
+            Elevation::Highland => "highland",
+            Elevation::Mountain => "mountain",
+        }
+    }
+
     /// Whether this band is ocean water.
     ///
     /// Section 15 defines water by the scalar — `elevation <= sea_level` — and
@@ -396,6 +423,9 @@ mod tests {
         // The lists a renderer draws a key from. If one of them ever misses a
         // variant the key silently stops showing it, so the check is that the
         // list *is* the discriminants, in order.
+        for (index, band) in Elevation::ALL.into_iter().enumerate() {
+            assert_eq!(usize::from(band as u8), index, "{band:?}");
+        }
         for (index, band) in HeatBand::ALL.into_iter().enumerate() {
             assert_eq!(usize::from(band as u8), index, "{band:?}");
         }
@@ -411,12 +441,13 @@ mod tests {
             .map(HeatBand::name)
             .into_iter()
             .chain(MoistureBand::ALL.map(MoistureBand::name))
+            .chain(Elevation::ALL.map(Elevation::name))
         {
             assert_eq!(name, name.to_lowercase(), "{name}");
             assert!(!seen.contains(&name), "{name} is used twice");
             seen.push(name);
         }
-        assert_eq!(seen.len(), 10);
+        assert_eq!(seen.len(), 16);
     }
 
     #[test]

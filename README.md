@@ -133,6 +133,11 @@ is no JavaScript and no client-side panning: every state the viewer can be in is
 a URL, so a window worth arguing about is a link somebody can paste into an
 issue.
 
+Every layer has a key, and the page names the tile at its center — the
+terrain, the elevation band, the two climate bands, and the scalars they were
+classified from — so a link to a window says what is in it rather than leaving
+a reader to count swatches.
+
 It binds loopback by default, clamps the window before rendering it, and its
 output is diagnostic in exactly the sense `wgvb-map`'s is — an in-memory
 generator from the seed in the route, not a saved world. See `DESIGN.md`

@@ -9,6 +9,7 @@
 use wgvb::{ALGORITHM_VERSION, Generator};
 use wgvb_render::{RENDER_VERSION, encode_png, render};
 
+use crate::PAGE_VERSION;
 use crate::page::page;
 use crate::view::{RequestError, Route, View};
 
@@ -86,22 +87,26 @@ pub fn reply(target: &str) -> Reply {
 /// Renders whichever of the two routes was asked for.
 fn draw(route: Route, view: &View) -> Result<Reply, RequestError> {
     let viewport = view.viewport()?;
+    let generator = Generator::with_defaults(view.seed);
     match route {
         Route::Page => Ok(Reply {
             status: 200,
             content_type: HTML,
-            body: page(view, &viewport).into_bytes(),
-            etag: Some(etag(view, "page")),
+            // One generator per request, built before the route is chosen:
+            // the page now reads the center tile and the image reads the
+            // whole window, and two generators would be two chances to
+            // disagree about the configuration behind one URL.
+            body: page(view, &viewport, &generator).into_bytes(),
+            etag: Some(etag(view, "page", PAGE_VERSION)),
             location: None,
         }),
         Route::Image => {
-            let generator = Generator::with_defaults(view.seed);
             let image = render(&generator, &viewport, view.layer);
             Ok(Reply {
                 status: 200,
                 content_type: PNG,
                 body: encode_png(&image)?,
-                etag: Some(etag(view, "png")),
+                etag: Some(etag(view, "png", RENDER_VERSION)),
                 location: None,
             })
         }
@@ -125,10 +130,19 @@ fn refuse(error: &RequestError) -> Reply {
 /// A strong `ETag` for a response.
 ///
 /// The bytes are a pure function of the seed, the center, the window, the
-/// layer, [`ALGORITHM_VERSION`], and [`RENDER_VERSION`], so naming exactly
-/// those is a strong validator and costs one header rather than a cache.
-/// `DESIGN.md` section 26 states the same validity rule for any cached render
-/// and asks for a profile before an actual cache, which this is not.
+/// layer, [`ALGORITHM_VERSION`], and whichever revision governs this
+/// representation, so naming exactly those is a strong validator and costs
+/// one header rather than a cache. `DESIGN.md` section 26 states the same
+/// validity rule for any cached render and asks for a profile before an
+/// actual cache, which this is not.
+///
+/// `revision` is the third input and the one that was missing: the page and
+/// the image are two different representations of one view, and each has its
+/// own thing that can change without the world changing. For the image that
+/// is [`RENDER_VERSION`]; for the page it is [`PAGE_VERSION`], because the
+/// markup is the server's and no version anywhere else described it. A page
+/// whose readout gained a row kept its tag until this argument existed, and
+/// browsers went on showing the page without the row.
 ///
 /// The hex radius enters by `to_bits`, so two radii that print the same but are
 /// not the same value cannot share a tag.
@@ -138,9 +152,9 @@ fn refuse(error: &RequestError) -> Reply {
 /// the effective configuration is currently a constant and the tag is sound;
 /// the moment a configuration can vary — a `--db` flag, a config file — the
 /// fingerprint has to join this list or the tag starts lying.
-fn etag(view: &View, kind: &str) -> String {
+fn etag(view: &View, kind: &str, revision: u32) -> String {
     format!(
-        "\"{kind}.a{ALGORITHM_VERSION}.v{RENDER_VERSION}.s{:016x}.q{}.r{}.{}x{}.h{:08x}.{}\"",
+        "\"{kind}{revision}.a{ALGORITHM_VERSION}.s{:016x}.q{}.r{}.{}x{}.h{:08x}.{}\"",
         view.seed,
         view.center.q(),
         view.center.r(),

@@ -7,7 +7,7 @@
 
 use std::fmt::Write as _;
 
-use wgvb::{ALGORITHM_VERSION, Climate, HeatBand, MoistureBand, Terrain};
+use wgvb::{ALGORITHM_VERSION, Climate, Coord, Generator, HeatBand, MoistureBand, Terrain};
 use wgvb_render::{
     Key, Layer, RENDER_VERSION, Scale, Viewport, climate_color, color, terrain_color,
 };
@@ -18,11 +18,18 @@ use crate::view::{COMPASS, Compass, MAX_HEX_RADIUS, MIN_HEX_RADIUS, View};
 ///
 /// Every value interpolated here has already been through [`View::parse`], so
 /// it is a `u64`, a [`wgvb::Coord`] component, a bounded tile count, or one of
-/// the fixed layer names. Nothing unvalidated reaches this function, which is
-/// why there is no escaping in it; refusals are answered as `text/plain`
-/// instead, where a quoted-back URL is inert.
+/// the fixed layer names. The tile readout adds generated data to that list,
+/// and it is inert for the same reason: a band or terrain name is a
+/// `&'static str` from the core crate, and a scalar is formatted as a number.
+/// Nothing unvalidated reaches this function, which is why there is no
+/// escaping in it; refusals are answered as `text/plain` instead, where a
+/// quoted-back URL is inert.
+///
+/// `generator` is the caller's, because the image route already builds one and
+/// two generators for one request would be two chances to disagree about the
+/// configuration.
 #[must_use]
-pub fn page(view: &View, viewport: &Viewport) -> String {
+pub fn page(view: &View, viewport: &Viewport, generator: &Generator) -> String {
     let (width, height) = viewport.image_size();
     let tiles = u64::from(view.cols) * u64::from(view.rows);
 
@@ -61,6 +68,7 @@ pub fn page(view: &View, viewport: &Viewport) -> String {
         html,
         "<dt>center</dt><dd><code>{view}</code> canonical <code>(q, r, s)</code></dd>"
     );
+    html.push_str(&tile_readout(generator, view.center));
     let _ = writeln!(
         html,
         "<dt>window</dt><dd>{} x {} tiles, {tiles} in all, at hex radius {} px \
@@ -258,6 +266,49 @@ fn climate_key() -> String {
         html.push_str("</tr>\n");
     }
     html.push_str("</table>\n");
+    html
+}
+
+/// What the generator says about the tile in the center cell.
+///
+/// The page names the center coordinate and, until terrain existed, said
+/// nothing about what was at it — so a link to a window was a link to a
+/// picture and a reader had to count swatches against the key to find out
+/// what they were looking at. This is one tile's worth of the public
+/// [`wgvb::Tile`], which is the whole of what a game would see there.
+///
+/// One tile costs seven elevation evaluations, against `cols * rows` for the
+/// image beside it. `DESIGN.md` section 29.1 asks the clamp to be the answer
+/// to cost rather than a cache, and this is far below the clamp.
+///
+/// The classifications and the scalars are two rows rather than one, because
+/// they answer different questions: the first says what a game would call
+/// this tile, and the second says how close it is to being called something
+/// else. A tile at `elevation +0.004` is a coast that is nearly a shallow
+/// sea, and no amount of staring at the band name says so.
+fn tile_readout(generator: &Generator, center: Coord) -> String {
+    let tile = generator.tile(center);
+    let sample = generator.sample(center);
+
+    let mut html = String::new();
+    let _ = writeln!(
+        html,
+        "<dt>tile</dt><dd><strong>{}</strong> — {}, {} and {}</dd>",
+        tile.terrain.name(),
+        tile.elevation.name(),
+        tile.climate.heat.name(),
+        tile.climate.moisture.name(),
+    );
+    let _ = writeln!(
+        html,
+        "<dt>values</dt><dd>elevation <code>{:+.3}</code>, relief <code>{:.3}</code>, heat <code>{:+.3}</code>, moisture <code>{:+.3}</code>, basin <code>{:+.3}</code>, volcanic <code>{:+.3}</code></dd>",
+        tile.elevation_value,
+        tile.relief_value,
+        tile.heat_value,
+        tile.moisture_value,
+        sample.basin_influence,
+        sample.volcanic,
+    );
     html
 }
 

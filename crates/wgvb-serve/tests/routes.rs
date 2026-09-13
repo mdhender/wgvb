@@ -4,16 +4,25 @@
 //! of a request target, so none of it opens a socket.
 
 use wgvb::{
-    Climate, Coord, DIRECTIONS, HeatBand, MoistureBand, Terrain, WORLD_RADIUS, direction_index,
+    ALGORITHM_VERSION, Climate, Coord, DIRECTIONS, Generator, HeatBand, MoistureBand, Terrain,
+    WORLD_RADIUS, direction_index,
 };
-use wgvb_render::{Layer, MAX_IMAGE_PIXELS, Viewport, climate_color, color, terrain_color};
+use wgvb_render::{
+    Layer, MAX_IMAGE_PIXELS, RENDER_VERSION, Viewport, climate_color, color, terrain_color,
+};
 use wgvb_serve::{
     COMPASS, DEFAULT_COLS, DEFAULT_HEX_RADIUS, DEFAULT_ROWS, HTML, MAX_COLS, MAX_HEX_RADIUS,
-    MAX_ROWS, PNG, Reply, Route, TEXT, View, reply,
+    MAX_ROWS, PAGE_VERSION, PNG, Reply, Route, TEXT, View, reply,
 };
 
 /// The golden seed, as it is written in the route.
 const SEED: &str = "0123456789abcdef";
+
+/// The same seed as a number, for the tests that generate a tile to compare
+/// the page against. Written out rather than parsed, so that a route and a
+/// generator disagreeing about what `SEED` means is a failure here rather
+/// than a silently passing comparison of one world against another.
+const SEED_VALUE: u64 = 0x0123_4567_89ab_cdef;
 
 /// The page for one query string.
 fn page(query: &str) -> Reply {
@@ -649,6 +658,93 @@ fn the_key_is_not_navigation() {
 }
 
 #[test]
+fn the_page_says_what_is_at_the_center_tile() {
+    // Naming the coordinate and not the tile made a link to a window a link
+    // to a picture: a reader had to count swatches against the key to find
+    // out what they were looking at. The readout is one tile's worth of the
+    // public `Tile`, which is the whole of what a game would see there.
+    let generator = Generator::with_defaults(SEED_VALUE);
+
+    // A coast, chosen because it exercises every row of the readout at once:
+    // a terrain whose rule reads the neighbors, a land band, and two climate
+    // bands.
+    let html = page("?q=167&r=-10&layer=terrain");
+    assert_eq!(html.status, 200);
+    let text = html.text();
+    let tile = generator.tile(Coord::new(167, -10));
+    assert_eq!(tile.terrain, Terrain::Coast, "the fixture moved");
+
+    assert!(
+        text.contains(&format!("<strong>{}</strong>", tile.terrain.name())),
+        "the readout does not name the terrain"
+    );
+    for name in [
+        tile.elevation.name(),
+        tile.climate.heat.name(),
+        tile.climate.moisture.name(),
+    ] {
+        assert!(text.contains(name), "the readout does not name {name}");
+    }
+    for (label, value) in [
+        ("elevation", tile.elevation_value),
+        ("heat", tile.heat_value),
+        ("moisture", tile.moisture_value),
+    ] {
+        assert!(
+            text.contains(&format!("{value:+.3}")),
+            "the readout does not carry {label} {value:+.3}"
+        );
+    }
+    assert!(
+        text.contains(&format!("{:.3}", tile.relief_value)),
+        "the readout does not carry relief"
+    );
+    let sample = generator.sample(Coord::new(167, -10));
+    for (label, value) in [
+        ("basin", sample.basin_influence),
+        ("volcanic", sample.volcanic),
+    ] {
+        assert!(
+            text.contains(&format!("{value:+.3}")),
+            "the readout does not carry {label} {value:+.3}"
+        );
+    }
+}
+
+#[test]
+fn the_readout_follows_the_center_rather_than_the_layer() {
+    // The tile is a property of the coordinate, not of the picture drawn over
+    // it, so every layer's page reports the same tile — and moving the center
+    // reports a different one.
+    let generator = Generator::with_defaults(SEED_VALUE);
+    let here = generator.tile(Coord::new(167, -10));
+    for layer in [
+        Layer::Elevation,
+        Layer::Climate,
+        Layer::Terrain,
+        Layer::Basin,
+    ] {
+        let html = page(&format!("?q=167&r=-10&layer={}", layer.name()));
+        let text = html.text();
+        assert!(
+            text.contains(&format!("<strong>{}</strong>", here.terrain.name())),
+            "{} does not report the center tile",
+            layer.name()
+        );
+    }
+
+    // Somewhere that is not the same tile, so the readout is not a constant.
+    let elsewhere = generator.tile(Coord::new(-1000, -1000));
+    assert_ne!(elsewhere.terrain, here.terrain, "the fixtures moved");
+    let html = page("?q=-1000&r=-1000");
+    let text = html.text();
+    assert!(
+        text.contains(&format!("<strong>{}</strong>", elsewhere.terrain.name())),
+        "the readout did not follow the center"
+    );
+}
+
+#[test]
 fn the_page_names_the_center_and_says_what_it_is_not() {
     let html = page("?q=-87&r=6543");
     let text = html.text();
@@ -698,6 +794,44 @@ fn every_parameter_that_changes_the_bytes_changes_the_tag() {
         .etag
         .expect("the page carries a tag");
     assert_ne!(tag, page_tag);
+}
+
+#[test]
+fn each_representation_s_tag_carries_its_own_revision() {
+    // The bug this pins actually happened. `ALGORITHM_VERSION` covers the
+    // world and `RENDER_VERSION` covers the pixels; between them they said
+    // nothing about the HTML, so a release that added a row to the readout
+    // emitted the same strong tag for different bytes and browsers went on
+    // showing the page without the row. A strong validator that does not
+    // change when the representation does is worse than no validator.
+    let query = "?q=3&r=4&cols=11&rows=9&hex-radius=6&layer=relief";
+    let page_tag = page(query).etag.expect("the page carries a tag");
+    let image_tag = reply(&format!("/seed/{SEED}/map.png{query}"))
+        .etag
+        .expect("the image carries a tag");
+
+    assert!(
+        page_tag.contains(&format!("page{PAGE_VERSION}")),
+        "the page tag does not name its markup revision: {page_tag}"
+    );
+    assert!(
+        image_tag.contains(&format!("png{RENDER_VERSION}")),
+        "the image tag does not name its render revision: {image_tag}"
+    );
+    // And the page's revision is the server's own, so it must not be in the
+    // image's tag: bumping the markup must not invalidate a cached PNG.
+    assert!(
+        !image_tag.contains("page"),
+        "the image tag carries the page revision: {image_tag}"
+    );
+
+    // Both name the world, because both depend on it.
+    for tag in [&page_tag, &image_tag] {
+        assert!(
+            tag.contains(&format!("a{ALGORITHM_VERSION}")),
+            "a tag does not name the algorithm version: {tag}"
+        );
+    }
 }
 
 #[test]
