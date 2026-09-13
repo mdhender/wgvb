@@ -9,12 +9,46 @@
 //! break the build, which is the point — caches must be concurrency-safe,
 //! optional, or outside the core.
 //!
-//! Phase 1 provides construction and accessors. The sampling API — `tile`,
-//! `elevation_at`, `relief`, `sample` — arrives with the fields it samples, and
-//! `tile` will have nothing to re-normalize because [`Coord`] already guarantees
-//! canonical input.
+//! Phase 2 adds [`Generator::sample`], the diagnostic scalar view of the
+//! continuous fields that exist so far. `tile`, `elevation_at`, and `relief`
+//! arrive with the classifications they depend on, in phases 4 through 6; when
+//! they do, `tile` will have nothing to re-normalize because [`Coord`] already
+//! guarantees canonical input.
 
-use crate::{Config, ConfigError, Seed};
+use crate::field::Fields;
+use crate::{Config, ConfigError, Coord, Seed, Vec2, axial_to_world};
+
+/// The continuous scalar fields at one coordinate.
+///
+/// Diagnostic output for the renderer and for tuning, not a [`crate::Tile`]:
+/// these are the raw fields of `DESIGN.md` section 10 before any classification.
+/// Every value is in `[-1, +1]`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Sample {
+    /// The coordinate sampled. Canonical by construction.
+    pub coord: Coord,
+    /// Where that coordinate sits in canonical world space, in miles. Carried
+    /// so a diagnostic caller need not re-derive it, and so the renderer can
+    /// show a position without reaching into the conversion itself.
+    pub world: Vec2,
+
+    /// Broad continental land and ocean structure.
+    pub continentalness: f64,
+    /// Regional uplift on top of continentalness.
+    pub regional: f64,
+    /// Hill-scale relief.
+    pub local: f64,
+    /// The finest terrain texture.
+    pub detail: f64,
+
+    /// The weighted multi-scale sum of section 10, normalized to `[-1, +1]`.
+    ///
+    /// This is *not* the elevation of [`crate::Tile`]. Phase 4 defines
+    /// elevation, including sea level and the shaping that makes coastlines
+    /// read as coastlines; this is the unshaped composite the tuning renderer
+    /// draws in the meantime.
+    pub elevation_raw: f64,
+}
 
 /// An immutable, thread-safe world generator.
 ///
@@ -25,6 +59,14 @@ use crate::{Config, ConfigError, Seed};
 pub struct Generator {
     seed: Seed,
     config: Config,
+    /// The field graph, composed once from the seed and configuration.
+    ///
+    /// Derived state, not input: it is a pure function of the two fields above,
+    /// so it does not enter the configuration fingerprint and cannot make two
+    /// generators with equal seed and configuration compare unequal. Building
+    /// it here rather than per sample keeps the allocation out of the hot path
+    /// while leaving the generator immutable.
+    fields: Fields,
 }
 
 impl Generator {
@@ -37,7 +79,12 @@ impl Generator {
     /// re-check it.
     pub fn new(seed: Seed, config: Config) -> Result<Generator, ConfigError> {
         config.validate()?;
-        Ok(Generator { seed, config })
+        let fields = Fields::build(seed, &config);
+        Ok(Generator {
+            seed,
+            config,
+            fields,
+        })
     }
 
     /// Builds a generator from a seed and the default configuration.
@@ -59,6 +106,46 @@ impl Generator {
     #[must_use]
     pub const fn config(&self) -> &Config {
         &self.config
+    }
+
+    /// Samples every continuous field at one canonical coordinate.
+    ///
+    /// A pure function of the seed, the coordinate, [`crate::ALGORITHM_VERSION`],
+    /// and the configuration — nothing here reads generation order, a cache, or
+    /// any mutable state, which is why concurrent callers see identical values.
+    ///
+    /// The composite accumulates coarsest to finest in a fixed order, per
+    /// `DESIGN.md` section 25.3.
+    #[must_use]
+    pub fn sample(&self, coord: Coord) -> Sample {
+        let world = axial_to_world(coord);
+
+        let continentalness = self.fields.continentalness.sample(world.x, world.y);
+        let regional = self.fields.regional.sample(world.x, world.y);
+        let local = self.fields.local.sample(world.x, world.y);
+        let detail = self.fields.detail.sample(world.x, world.y);
+
+        let config = &self.config;
+        let mut total = 0.0_f64;
+        let mut weight = 0.0_f64;
+        total += config.continental_weight * continentalness;
+        weight += config.continental_weight;
+        total += config.regional_weight * regional;
+        weight += config.regional_weight;
+        total += config.local_weight * local;
+        weight += config.local_weight;
+        total += config.detail_weight * detail;
+        weight += config.detail_weight;
+
+        Sample {
+            coord,
+            world,
+            continentalness,
+            regional,
+            local,
+            detail,
+            elevation_raw: total / weight,
+        }
     }
 }
 
@@ -94,19 +181,154 @@ mod tests {
         assert_ne!(*g.config(), Config::default());
     }
 
+    /// A spread of canonical coordinates, including negatives, wrapped inputs,
+    /// and coordinates far from the origin.
+    fn sample_coords() -> Vec<Coord> {
+        let mut out = Vec::new();
+        for q in -6..=6_i64 {
+            for r in -6..=6_i64 {
+                out.push(Coord::new(q, r));
+            }
+        }
+        for (q, r) in [
+            (0, 0),
+            (-1, 5),
+            (12_345, -6_789),
+            (-32_767, 17),
+            (32_767, -32_767),
+            (i64::MAX, 3),
+            (i64::MIN, -7),
+        ] {
+            out.push(Coord::new(q, r));
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    #[test]
+    fn sampling_is_deterministic_and_bit_exact() {
+        let g = Generator::with_defaults(0x1234_5678);
+        for c in sample_coords() {
+            let first = g.sample(c);
+            let second = g.sample(c);
+            assert_eq!(first, second, "{c:?}");
+            assert_eq!(
+                first.elevation_raw.to_bits(),
+                second.elevation_raw.to_bits(),
+                "{c:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_sampled_value_is_normalized() {
+        let g = Generator::with_defaults(99);
+        for c in sample_coords() {
+            let s = g.sample(c);
+            for (name, value) in [
+                ("continentalness", s.continentalness),
+                ("regional", s.regional),
+                ("local", s.local),
+                ("detail", s.detail),
+                ("elevation_raw", s.elevation_raw),
+            ] {
+                assert!(value.is_finite(), "{name} at {c:?} is {value}");
+                assert!((-1.0..=1.0).contains(&value), "{name} at {c:?} is {value}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_sample_reports_the_coordinate_and_world_position_it_used() {
+        let g = Generator::with_defaults(5);
+        for c in sample_coords() {
+            let s = g.sample(c);
+            assert_eq!(s.coord, c);
+            assert_eq!(s.world, crate::axial_to_world(c));
+        }
+    }
+
+    #[test]
+    fn sampling_order_does_not_affect_any_value() {
+        // Section 30.2. Visit the same coordinates forwards, then backwards,
+        // then interleaved, and require bit-exact agreement.
+        let g = Generator::with_defaults(0xfeed_face);
+        let coords = sample_coords();
+
+        let forward: Vec<Sample> = coords.iter().map(|c| g.sample(*c)).collect();
+
+        let mut backward: Vec<Sample> = coords.iter().rev().map(|c| g.sample(*c)).collect();
+        backward.reverse();
+        assert_eq!(forward, backward);
+
+        let mut interleaved = vec![forward[0]; coords.len()];
+        for index in (0..coords.len()).step_by(2) {
+            interleaved[index] = g.sample(coords[index]);
+        }
+        for index in (1..coords.len()).step_by(2) {
+            interleaved[index] = g.sample(coords[index]);
+        }
+        assert_eq!(forward, interleaved);
+    }
+
+    #[test]
+    fn the_seed_and_the_configuration_both_change_the_world() {
+        let c = Coord::new(37, -11);
+        let a = Generator::with_defaults(1).sample(c);
+        let b = Generator::with_defaults(2).sample(c);
+        assert_ne!(a.elevation_raw, b.elevation_raw);
+
+        let tuned = Generator::new(
+            1,
+            Config {
+                continental_wavelength_miles: 5_994.0,
+                ..Config::default()
+            },
+        )
+        .expect("configuration is valid");
+        assert_ne!(a.elevation_raw, tuned.sample(c).elevation_raw);
+    }
+
+    #[test]
+    fn a_wrapped_coordinate_samples_exactly_as_its_canonical_representative() {
+        // Section 7.1: a coordinate outside the canonical domain names the same
+        // tile as its canonical representative, so it must sample identically —
+        // bit for bit, not approximately.
+        let g = Generator::with_defaults(0xabc);
+        let n = crate::WORLD_RADIUS;
+        for (q, r) in [(0_i64, 0_i64), (5, -3), (-11, 400), (n, -n), (-n, n)] {
+            let canonical = Coord::new(q, r);
+            for (mq, mr) in [(2 * n + 1, -n), (n + 1, -(2 * n + 1)), (-(2 * n + 1), n)] {
+                let wrapped = Coord::new(q + mq, r + mr);
+                assert_eq!(wrapped, canonical);
+                assert_eq!(g.sample(wrapped), g.sample(canonical));
+            }
+        }
+    }
+
     #[test]
     fn a_generator_is_usable_from_several_threads_at_once() {
-        // This compiles only if `Generator: Sync`, which is the property the
-        // assertion in lib.rs pins. Once sampling exists, the same shape proves
-        // order independence.
+        // Section 30.3. This compiles only if `Generator: Sync`, which is the
+        // property the assertion in lib.rs pins, and it passes only if thread
+        // scheduling cannot reach any value.
         let generator = Generator::with_defaults(42);
         let g = &generator;
-        let coords = [Coord::new(0, 0), Coord::new(-1, 5), Coord::new(i64::MAX, 3)];
+        let coords = sample_coords();
+        let expected: Vec<Sample> = coords.iter().map(|c| g.sample(*c)).collect();
+
         std::thread::scope(|scope| {
-            for c in coords {
+            for worker in 0..8_usize {
+                let coords = &coords;
+                let expected = &expected;
                 scope.spawn(move || {
                     assert_eq!(g.seed(), 42);
-                    assert_eq!(c, Coord::new(i64::from(c.q()), i64::from(c.r())));
+                    // Each worker walks the whole list from a different offset,
+                    // so no two threads sample in the same order.
+                    for step in 0..coords.len() {
+                        let index = (step + worker * 7) % coords.len();
+                        assert_eq!(g.sample(coords[index]), expected[index]);
+                    }
                 });
             }
         });

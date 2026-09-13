@@ -59,6 +59,16 @@ pub const DOM_RIDGE_ORIENTATION: u64 = domain(b"ridge-orientation");
 pub const DOM_BASIN: u64 = domain(b"basin");
 /// Domain: volcanic tendency.
 pub const DOM_VOLCANIC: u64 = domain(b"volcanic");
+/// Domain: `x` component of the low-frequency domain warp. See `DESIGN.md`
+/// section 13.
+pub const DOM_WARP_X: u64 = domain(b"warp-x");
+/// Domain: `y` component of the low-frequency domain warp.
+pub const DOM_WARP_Y: u64 = domain(b"warp-y");
+/// Domain: `x` component of the weaker high-frequency warp that breaks up local
+/// relief.
+pub const DOM_DETAIL_WARP_X: u64 = domain(b"detail-warp-x");
+/// Domain: `y` component of the weaker high-frequency warp.
+pub const DOM_DETAIL_WARP_Y: u64 = domain(b"detail-warp-y");
 
 /// Odd increment from SplitMix64, the fractional part of the golden ratio
 /// scaled to 64 bits. Separates successive inputs so two coordinates cannot
@@ -195,6 +205,10 @@ mod tests {
         assert_eq!(DOM_RIDGE_ORIENTATION, 0x0f5b_ac88_66b1_037b);
         assert_eq!(DOM_BASIN, 0xd6e8_5182_6dfb_0aa6);
         assert_eq!(DOM_VOLCANIC, 0x3208_6c8b_90c6_35b8);
+        assert_eq!(DOM_WARP_X, 0xa1e1_8632_3c66_62fa);
+        assert_eq!(DOM_WARP_Y, 0xa1e1_8732_3c66_64ad);
+        assert_eq!(DOM_DETAIL_WARP_X, 0xcbea_8698_f30a_6740);
+        assert_eq!(DOM_DETAIL_WARP_Y, 0xcbea_8798_f30a_68f3);
     }
 
     #[test]
@@ -216,6 +230,10 @@ mod tests {
             DOM_RIDGE_ORIENTATION,
             DOM_BASIN,
             DOM_VOLCANIC,
+            DOM_WARP_X,
+            DOM_WARP_Y,
+            DOM_DETAIL_WARP_X,
+            DOM_DETAIL_WARP_Y,
         ]
     }
 

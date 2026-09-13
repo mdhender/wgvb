@@ -18,5 +18,12 @@ wgvb-store.workspace = true
 wgvb-render.workspace = true
 clap.workspace = true
 
+# `png` is a dev-dependency only. The binary never decodes: it writes what
+# `wgvb-render` encoded. Section 29 requires that rendered output be compared as
+# decoded RGBA rather than as file bytes, and proving this command actually
+# wrote a readable image needs a decoder.
+[dev-dependencies]
+png.workspace = true
+
 [lints]
 workspace = true

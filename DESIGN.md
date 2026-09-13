@@ -367,6 +367,28 @@ overwhelmingly common one.
 
 WGVB should make a best effort to make continuous fields periodic under the mirror translations so terrain joins naturally across wrapped edges. Exact periodicity must not delay the first implementation. If a field cannot be made periodic without disproportionate complexity or loss of quality, the discontinuity is an accepted world-warp seam and must be documented and tested as such.
 
+**Accepted seam, as implemented.** The phase 2 fields are *not* periodic under
+the mirror translations, and that is the accepted state rather than an
+oversight. Sampling is a pure function of the canonical coordinate, so a
+coordinate and its wrapped image produce bit-identical values — that much is
+exact and is what tile identity depends on. But two tiles that neighbor each
+other *across* a wrapped edge lie roughly `393,204` miles apart in canonical
+world space, so their field values are uncorrelated and the join is visible.
+
+Closing that join needs a noise lattice whose spacing divides the wrap period.
+That period is `2N+1 = 65535 = 3 * 5 * 17 * 257` hexes, so every wavelength in
+the configuration — and every fbm octave derived from it through the
+lacunarity — would have to be drawn from the divisors of `65535`. The
+constraint is real and joint, and it cuts into the multi-scale table of
+section 10, so it is deferred rather than rushed. Taking it later is an
+algorithm compatibility change under section 27.
+
+Until then the seam is measured, not merely admitted:
+`crates/wgvb/tests/wrap_seam.rs` asserts bit-exact wrap consistency across all
+six edges and all integer combinations of the mirror centers, asserts that the
+discontinuity exists only where it is expected to, and fails loudly if a future
+change makes the fields periodic without updating this section.
+
 **Hex geometry dependency.** The core `wgvb` crate does *not* depend on a hex
 library. It needs only the six direction vectors and the `f64` axial-to-world
 conversion above, both a few lines, and both pinned by the algorithm version.

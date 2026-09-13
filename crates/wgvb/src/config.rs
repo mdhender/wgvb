@@ -68,12 +68,31 @@ pub struct Config {
     /// graph without a warp stage rather than setting this to zero.
     pub warp_strength_miles: f64,
 
+    /// Wavelength of the weaker, higher-frequency warp that breaks up local
+    /// relief. `DESIGN.md` section 13 calls for low-frequency warps for large
+    /// geography and weaker high-frequency warps for local irregularity, which
+    /// is two warp scales, not one.
+    pub detail_warp_wavelength_miles: f64,
+    /// Magnitude of the high-frequency warp offset.
+    pub detail_warp_strength_miles: f64,
+
     /// Octave count for fbm composition, in `1..=16`.
     pub fbm_octaves: u8,
     /// Frequency multiplier between successive fbm octaves.
     pub fbm_lacunarity: f64,
     /// Amplitude multiplier between successive fbm octaves.
     pub fbm_gain: f64,
+
+    /// Weight of continentalness in the multi-scale composite of `DESIGN.md`
+    /// section 10. The composite divides by the total weight, so these are
+    /// relative amplitudes rather than absolute ones.
+    pub continental_weight: f64,
+    /// Weight of regional uplift in the multi-scale composite.
+    pub regional_weight: f64,
+    /// Weight of hill-scale relief in the multi-scale composite.
+    pub local_weight: f64,
+    /// Weight of the finest terrain detail in the multi-scale composite.
+    pub detail_weight: f64,
 
     /// Macro-region edge, in hexes.
     pub macro_region_size_hexes: u32,
@@ -108,9 +127,20 @@ impl Default for Config {
             warp_wavelength_miles: 1_200.0,
             warp_strength_miles: 90.0,
 
+            // 20 hexes, warping by up to 3 hexes.
+            detail_warp_wavelength_miles: 120.0,
+            detail_warp_strength_miles: 18.0,
+
             fbm_octaves: 5,
             fbm_lacunarity: 2.0,
             fbm_gain: 0.5,
+
+            // A halving ladder: each finer scale contributes half of the one
+            // above it, so broad structure dominates and detail textures it.
+            continental_weight: 1.0,
+            regional_weight: 0.5,
+            local_weight: 0.25,
+            detail_weight: 0.125,
 
             macro_region_size_hexes: DEFAULT_MACRO_REGION_SIZE_HEXES,
             region_size_hexes: DEFAULT_REGION_SIZE_HEXES,
@@ -138,6 +168,14 @@ impl Config {
 
         positive("warp_wavelength_miles", self.warp_wavelength_miles)?;
         positive("warp_strength_miles", self.warp_strength_miles)?;
+        positive(
+            "detail_warp_wavelength_miles",
+            self.detail_warp_wavelength_miles,
+        )?;
+        positive(
+            "detail_warp_strength_miles",
+            self.detail_warp_strength_miles,
+        )?;
 
         if self.fbm_octaves == 0 || self.fbm_octaves > MAX_FBM_OCTAVES {
             return Err(ConfigError::OctaveCount(self.fbm_octaves));
@@ -145,6 +183,11 @@ impl Config {
         in_range("fbm_lacunarity", self.fbm_lacunarity, 1.0, 4.0)?;
         positive("fbm_gain", self.fbm_gain)?;
         in_range("fbm_gain", self.fbm_gain, 0.0, 1.0)?;
+
+        positive("continental_weight", self.continental_weight)?;
+        positive("regional_weight", self.regional_weight)?;
+        positive("local_weight", self.local_weight)?;
+        positive("detail_weight", self.detail_weight)?;
 
         positive_size("macro_region_size_hexes", self.macro_region_size_hexes)?;
         positive_size("region_size_hexes", self.region_size_hexes)?;
@@ -214,6 +257,25 @@ mod tests {
     }
 
     #[test]
+    fn default_composite_weights_fall_coarse_to_fine() {
+        // The composite of section 10 is dominated by broad structure; a finer
+        // scale outweighing a coarser one produces noise, not geography.
+        let c = Config::default();
+        assert!(c.continental_weight > c.regional_weight);
+        assert!(c.regional_weight > c.local_weight);
+        assert!(c.local_weight > c.detail_weight);
+    }
+
+    #[test]
+    fn the_detail_warp_is_shorter_and_weaker_than_the_geographic_warp() {
+        // Section 13: low-frequency warps for large geography, weaker
+        // high-frequency warps for local irregularity.
+        let c = Config::default();
+        assert!(c.detail_warp_wavelength_miles < c.warp_wavelength_miles);
+        assert!(c.detail_warp_strength_miles < c.warp_strength_miles);
+    }
+
+    #[test]
     fn default_scales_are_whole_numbers_of_hexes() {
         // One hex of wavelength is 2 * APOTHEM_MILES of center-to-center
         // distance. DESIGN.md section 10.
@@ -225,6 +287,7 @@ mod tests {
             ("local", c.local_wavelength_miles),
             ("detail", c.detail_wavelength_miles),
             ("warp", c.warp_wavelength_miles),
+            ("detail warp", c.detail_warp_wavelength_miles),
         ] {
             assert_eq!(
                 value % hex,
@@ -255,6 +318,16 @@ mod tests {
             }),
             ("warp_wavelength_miles", |c, v| c.warp_wavelength_miles = v),
             ("warp_strength_miles", |c, v| c.warp_strength_miles = v),
+            ("detail_warp_wavelength_miles", |c, v| {
+                c.detail_warp_wavelength_miles = v
+            }),
+            ("detail_warp_strength_miles", |c, v| {
+                c.detail_warp_strength_miles = v
+            }),
+            ("continental_weight", |c, v| c.continental_weight = v),
+            ("regional_weight", |c, v| c.regional_weight = v),
+            ("local_weight", |c, v| c.local_weight = v),
+            ("detail_weight", |c, v| c.detail_weight = v),
             ("fbm_lacunarity", |c, v| c.fbm_lacunarity = v),
             ("fbm_gain", |c, v| c.fbm_gain = v),
         ]
@@ -284,6 +357,12 @@ mod tests {
             "detail_wavelength_miles",
             "warp_wavelength_miles",
             "warp_strength_miles",
+            "detail_warp_wavelength_miles",
+            "detail_warp_strength_miles",
+            "continental_weight",
+            "regional_weight",
+            "local_weight",
+            "detail_weight",
             "fbm_gain",
         ] {
             for bad in [0.0, -0.0, -1.0] {

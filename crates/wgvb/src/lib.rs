@@ -14,17 +14,21 @@
 
 mod config;
 mod coord;
+mod field;
 mod generator;
 mod hash;
+mod noise;
 mod tile;
 
 pub use config::{Config, ConfigError, MAX_FBM_OCTAVES};
 pub use coord::{Coord, DIRECTION_COUNT, DIRECTIONS, Vec2, axial_to_world, direction_index};
-pub use generator::Generator;
+pub use field::Field;
+pub use generator::{Generator, Sample};
 pub use hash::{
-    DOM_BASIN, DOM_CONTINENTALNESS, DOM_MOISTURE, DOM_REGION_STYLE, DOM_REGIONAL_ELEVATION,
-    DOM_RELIEF, DOM_RIDGE_ORIENTATION, DOM_TEMPERATURE, DOM_TERRAIN_DETAIL, DOM_VOLCANIC, domain,
-    hash_n, hash2, hash3, signed_unit_f64, unit_f64,
+    DOM_BASIN, DOM_CONTINENTALNESS, DOM_DETAIL_WARP_X, DOM_DETAIL_WARP_Y, DOM_MOISTURE,
+    DOM_REGION_STYLE, DOM_REGIONAL_ELEVATION, DOM_RELIEF, DOM_RIDGE_ORIENTATION, DOM_TEMPERATURE,
+    DOM_TERRAIN_DETAIL, DOM_VOLCANIC, DOM_WARP_X, DOM_WARP_Y, domain, hash_n, hash2, hash3,
+    signed_unit_f64, unit_f64,
 };
 pub use tile::{Climate, Elevation, HeatBand, MoistureBand, Terrain, Tile};
 

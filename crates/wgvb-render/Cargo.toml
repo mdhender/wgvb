@@ -14,5 +14,9 @@ thiserror.workspace = true
 hexx.workspace = true
 png.workspace = true
 
+# `png` is already a dependency for encoding; the decoder side is used only by
+# tests, which section 29 requires to compare decoded RGBA rather than file
+# bytes.
+
 [lints]
 workspace = true
