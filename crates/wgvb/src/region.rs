@@ -109,7 +109,8 @@ impl UnitVec2 {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RegionParams {
     /// Average uplift: how much higher or lower this place sits than the
-    /// continental field alone would put it. Consumed by phase 4.
+    /// continental field alone would put it. Weighted by
+    /// [`Config::uplift_weight`] into the elevation scalar.
     pub elevation_bias: f64,
     /// Wet or dry tendency, the "wet/dry tendency" of section 11.1. Consumed by
     /// phase 5.
@@ -117,6 +118,11 @@ pub struct RegionParams {
     /// Warm or cool tendency, independent of moisture. Consumed by phase 5.
     pub heat_bias: f64,
     /// Rough or smooth tendency: how strongly local relief reads here.
+    ///
+    /// Elevation reads it twice — it scales the ridge structure term to zero in
+    /// a smooth region, and it scales hill relief between half and full
+    /// strength — so a smooth region is a gentle plain and a rough one is a
+    /// mountain belt. Phase 6 reads it again for terrain.
     pub roughness: f64,
     /// Tendency toward enclosed low ground. Consumed by phase 6, which decides
     /// whether bounded local generation can give inland water coherent
@@ -400,9 +406,15 @@ fn orientation_of(x: f64, y: f64) -> UnitVec2 {
 
 /// One blended parameter at one coordinate, in `[-1, +1]`.
 ///
-/// The cheap path, for a caller that wants a single bias — [`crate::Sample`]
-/// wants the elevation bias and nothing else — and it agrees with [`params`]
-/// bit for bit because it performs the same operations in the same order.
+/// The reference form of the blend, written for exactly one parameter with
+/// nothing else in the loop. Production callers take [`params`] or the narrowed
+/// [`elevation_inputs`]; this exists so the tests can state what those two are
+/// supposed to compute without restating either of them, and so a test of one
+/// parameter reads as a test of one parameter.
+///
+/// All three perform the same operations in the same order, so all three agree
+/// bit for bit.
+#[cfg(test)]
 pub(crate) fn scalar(seed: Seed, config: &Config, coord: Coord, param: Param) -> f64 {
     let mut total = 0.0_f64;
     let mut weight = 0.0_f64;
@@ -422,6 +434,68 @@ pub(crate) fn scalar(seed: Seed, config: &Config, coord: Coord, param: Param) ->
     }
 
     normalize(total, weight)
+}
+
+/// The three region parameters the elevation scalar consumes.
+///
+/// [`params`] computes all seven scalars plus the ridge orientation, and the
+/// ridge orientation alone costs a rejection-sampling loop per anchor per
+/// level. Elevation is evaluated seven times per tile — once at the tile and
+/// once at each of its six neighbors, for relief — so paying for moisture,
+/// heat, basin, volcanic, and variation seven times over would be most of the
+/// cost of a tile for values elevation never reads.
+///
+/// This is a narrowing, not a second implementation: each quantity accumulates
+/// with the same operations in the same order as in [`params`], so the two
+/// agree bit for bit. A test asserts exactly that, because "agrees bit for bit"
+/// is a claim that decays silently if either function is edited alone.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ElevationInputs {
+    pub(crate) elevation_bias: f64,
+    pub(crate) roughness: f64,
+    pub(crate) ridge: UnitVec2,
+}
+
+pub(crate) fn elevation_inputs(seed: Seed, config: &Config, coord: Coord) -> ElevationInputs {
+    let mut elevation_bias = 0.0_f64;
+    let mut roughness = 0.0_f64;
+    let mut director = (0.0_f64, 0.0_f64);
+    let mut weight = 0.0_f64;
+
+    // Coarse to fine, always. Section 25.3.
+    for level in LEVELS {
+        let influence = level.influence(config);
+        let (anchors, weights) = anchors_and_weights(coord, level.size_hexes(config));
+
+        for (param, total) in [
+            (Param::ElevationBias, &mut elevation_bias),
+            (Param::Roughness, &mut roughness),
+        ] {
+            let mut blended = 0.0_f64;
+            for (anchor_weight, anchor) in weights.into_iter().zip(anchors) {
+                blended += anchor_weight * anchor_scalar(seed, level, anchor, param);
+            }
+            *total += influence * blended;
+        }
+
+        // Orientations blend as directors, never as arrows. See `director_of`.
+        let mut blended = (0.0_f64, 0.0_f64);
+        for (anchor_weight, anchor) in weights.into_iter().zip(anchors) {
+            let (dx, dy) = director_of(anchor_ridge(seed, level, anchor));
+            blended.0 += anchor_weight * dx;
+            blended.1 += anchor_weight * dy;
+        }
+        director.0 += influence * blended.0;
+        director.1 += influence * blended.1;
+
+        weight += influence;
+    }
+
+    ElevationInputs {
+        elevation_bias: normalize(elevation_bias, weight),
+        roughness: normalize(roughness, weight),
+        ridge: orientation_of(normalize(director.0, weight), normalize(director.1, weight)),
+    }
 }
 
 /// Every region parameter at one coordinate.
@@ -543,6 +617,51 @@ mod tests {
             cube = (-cube.2, -cube.0, -cube.1);
         }
         out
+    }
+
+    #[test]
+    fn the_narrowed_elevation_path_agrees_with_the_full_one_bit_for_bit() {
+        // `elevation_inputs` exists only to skip the parameters elevation does
+        // not read. The moment it computes anything differently it stops being
+        // a narrowing and becomes a second world, so this is the test that
+        // makes the optimization safe rather than merely fast.
+        let config = config();
+        for coord in sample_coords() {
+            let full = params(SEED, &config, coord);
+            let narrow = elevation_inputs(SEED, &config, coord);
+            assert_eq!(
+                narrow.elevation_bias.to_bits(),
+                full.elevation_bias.to_bits(),
+                "{coord:?}"
+            );
+            assert_eq!(
+                narrow.roughness.to_bits(),
+                full.roughness.to_bits(),
+                "{coord:?}"
+            );
+            assert_eq!(
+                narrow.ridge.x.to_bits(),
+                full.ridge.x.to_bits(),
+                "{coord:?}"
+            );
+            assert_eq!(
+                narrow.ridge.y.to_bits(),
+                full.ridge.y.to_bits(),
+                "{coord:?}"
+            );
+            // And against the one-parameter reference, so a matching pair of
+            // wrong implementations would still be caught.
+            assert_eq!(
+                narrow.elevation_bias.to_bits(),
+                scalar(SEED, &config, coord, Param::ElevationBias).to_bits(),
+                "{coord:?}"
+            );
+            assert_eq!(
+                narrow.roughness.to_bits(),
+                scalar(SEED, &config, coord, Param::Roughness).to_bits(),
+                "{coord:?}"
+            );
+        }
     }
 
     #[test]

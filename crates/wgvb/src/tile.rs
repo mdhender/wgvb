@@ -12,8 +12,10 @@
 //! data in exactly the way reordering a Go `iota` block does. Writing `= 0`,
 //! `= 1`, ... makes the hazard visible in review.
 //!
-//! Phase 1 defines these types and nothing that assigns them; the classifiers
-//! arrive with the fields they classify, in phases 4 through 6.
+//! Phase 1 defined these types and nothing that assigned them. Phase 4 assigns
+//! [`Tile::elevation_value`], [`Tile::relief_value`], and [`Tile::elevation`];
+//! [`Tile::climate`] and [`Tile::terrain`] are still provisional and are
+//! documented as such on the fields themselves.
 
 use crate::Coord;
 
@@ -27,6 +29,29 @@ pub enum Elevation {
     Upland = 3,
     Highland = 4,
     Mountain = 5,
+}
+
+impl Elevation {
+    /// Whether this band is ocean water.
+    ///
+    /// Section 15 defines water by the scalar — `elevation <= sea_level` — and
+    /// this is the same partition read off the band, which the classifier
+    /// derives from that comparison. A unit test in `elevation.rs` holds the
+    /// two definitions together at the threshold itself, where they could
+    /// otherwise drift apart unnoticed.
+    ///
+    /// Inland water is not this: a lake sits on potential land and arrives in
+    /// phase 6, if it arrives at all. See [`Terrain`].
+    #[must_use]
+    pub const fn is_water(self) -> bool {
+        matches!(self, Elevation::DeepWater | Elevation::ShallowWater)
+    }
+
+    /// Whether this band is potential land.
+    #[must_use]
+    pub const fn is_land(self) -> bool {
+        !self.is_water()
+    }
 }
 
 /// Temperature band. Independent of [`MoistureBand`] on purpose: cold and arid
@@ -132,7 +157,24 @@ pub struct Tile {
     pub relief_value: f64,
 
     pub elevation: Elevation,
+
+    /// **Provisional until phase 5.** The heat and moisture fields do not exist
+    /// yet, so every tile reports the middle of both axes and
+    /// [`Tile::heat_value`] and [`Tile::moisture_value`] are zero. Do not build
+    /// anything on this value; it is here so the shape of a [`Tile`] does not
+    /// change when climate lands.
     pub climate: Climate,
+
+    /// **Provisional until phase 6.** Derived from the elevation band alone,
+    /// which is not how terrain is meant to be classified: section 17 derives
+    /// it from elevation, relief, and climate together, and two of those are
+    /// not generated yet.
+    ///
+    /// The value is a plausible one rather than a placeholder constant so that
+    /// a caller reading it sees water where there is water — but it carries no
+    /// climate information at all, so there is no tundra, no desert, and no
+    /// forest anywhere in the world. The diagnostic renderer deliberately has
+    /// no terrain layer at this phase for that reason.
     pub terrain: Terrain,
 }
 
@@ -148,6 +190,26 @@ mod tests {
         assert_eq!(Elevation::Upland as u8, 3);
         assert_eq!(Elevation::Highland as u8, 4);
         assert_eq!(Elevation::Mountain as u8, 5);
+    }
+
+    #[test]
+    fn the_water_bands_are_exactly_the_two_lowest() {
+        let all = [
+            Elevation::DeepWater,
+            Elevation::ShallowWater,
+            Elevation::Lowland,
+            Elevation::Upland,
+            Elevation::Highland,
+            Elevation::Mountain,
+        ];
+        for band in all {
+            assert_eq!(band.is_water(), !band.is_land(), "{band:?}");
+            assert_eq!(
+                band.is_water(),
+                (band as u8) <= Elevation::ShallowWater as u8
+            );
+        }
+        assert_eq!(all.iter().filter(|b| b.is_water()).count(), 2);
     }
 
     #[test]

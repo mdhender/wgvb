@@ -11,26 +11,35 @@
 //! field with a seam at a cell edge still fails.
 //!
 //! Two different kinds of scalar are measured, and the distinction matters when
-//! one of these tests fails. The four noise fields and the composite never read
-//! an addressing index at all, so for them a seam would mean something had
-//! leaked in that has no business being there. `regional_uplift` *is* addressed
-//! by region: it is blended across the anchors around a tile, and it is the
-//! scalar section 30.5 is really about. A seam there would mean the blend had
-//! degenerated into the hard region boundary section 33.4 forbids.
+//! one of these tests fails. The four noise fields and `elevation_raw` never
+//! read an addressing index at all, so for them a seam would mean something had
+//! leaked in that has no business being there.
+//!
+//! `regional_uplift`, `roughness`, `ridge`, and `elevation` *are* addressed by
+//! region, and they are what section 30.5 is really about. The first two are
+//! blended across the anchors around a tile; `ridge` reads the blended ridge
+//! orientation, so it fails here if the orientation blend creases even where
+//! the scalars do not; and `elevation` folds all of them together, which makes
+//! it the one that would show a seam a reader could actually see on a map. A
+//! seam in any of them would mean the blend had degenerated into the hard
+//! region boundary section 33.4 forbids.
 
 use wgvb::{Config, Coord, Generator, Sample};
 
 const SEED: u64 = 0x00c0_ffee_0bad_f00d;
 
 /// Every scalar a [`Sample`] carries, named, in a fixed order.
-fn scalars(s: &Sample) -> [(&'static str, f64); 6] {
+fn scalars(s: &Sample) -> [(&'static str, f64); 9] {
     [
         ("continentalness", s.continentalness),
         ("regional", s.regional),
         ("local", s.local),
         ("detail", s.detail),
+        ("ridge", s.ridge),
         ("elevation_raw", s.elevation_raw),
         ("regional_uplift", s.regional_uplift),
+        ("roughness", s.roughness),
+        ("elevation", s.elevation),
     ]
 }
 
@@ -79,8 +88,8 @@ fn steps_along_a_line(
     along_q: bool,
     fixed: i64,
     span: i64,
-) -> [Steps; 6] {
-    let mut steps = [Steps::default(); 6];
+) -> [Steps; 9] {
+    let mut steps = [Steps::default(); 9];
     let mut previous: Option<Sample> = None;
 
     for step in -span..=span {

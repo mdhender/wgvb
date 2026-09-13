@@ -14,22 +14,24 @@
 
 mod config;
 mod coord;
+mod elevation;
 mod field;
 mod generator;
 mod hash;
 mod noise;
 mod region;
+mod relief;
 mod tile;
 
-pub use config::{Config, ConfigError, MAX_FBM_OCTAVES};
+pub use config::{Config, ConfigError, MAX_CONTRAST_PASSES, MAX_FBM_OCTAVES};
 pub use coord::{Coord, DIRECTION_COUNT, DIRECTIONS, Vec2, axial_to_world, direction_index};
 pub use field::Field;
 pub use generator::{Generator, Sample};
 pub use hash::{
     DOM_BASIN, DOM_CONTINENTALNESS, DOM_DETAIL_WARP_X, DOM_DETAIL_WARP_Y, DOM_MOISTURE,
-    DOM_REGION_STYLE, DOM_REGIONAL_ELEVATION, DOM_RELIEF, DOM_RIDGE_ORIENTATION, DOM_TEMPERATURE,
-    DOM_TERRAIN_DETAIL, DOM_VOLCANIC, DOM_WARP_X, DOM_WARP_Y, domain, hash_n, hash2, hash3,
-    signed_unit_f64, unit_f64,
+    DOM_REGION_STYLE, DOM_REGIONAL_ELEVATION, DOM_RELIEF, DOM_RIDGE_ORIENTATION,
+    DOM_RIDGE_STRUCTURE, DOM_TEMPERATURE, DOM_TERRAIN_DETAIL, DOM_VOLCANIC, DOM_WARP_X, DOM_WARP_Y,
+    domain, hash_n, hash2, hash3, signed_unit_f64, unit_f64,
 };
 pub use region::{RegionParams, UnitVec2};
 pub use tile::{Climate, Elevation, HeatBand, MoistureBand, Terrain, Tile};
@@ -39,7 +41,19 @@ pub use tile::{Climate, Elevation, HeatBand, MoistureBand, Terrain, Tile};
 /// Changing any hash domain, field composition, threshold, default, the
 /// coordinate-to-world conversion, or any classification rule changes existing
 /// worlds and requires bumping this value. See `DESIGN.md` section 27.
-pub const ALGORITHM_VERSION: u32 = 1;
+///
+/// # History
+///
+/// - **1** — phase 2 and phase 3. Four continuous scalar fields and the
+///   hierarchical region blend.
+/// - **2** — phase 4. Elevation. The composite gained a region uplift term, a
+///   ridge structure term, a constant offset, and the contrast shaping; the
+///   hill and detail weights were retuned down, which moved the four-field
+///   composite that version 1 had already fixed. That last part is what makes
+///   this a version bump rather than an addition: phase 3 could add region
+///   influence without one because it left every existing value alone, and this
+///   change does not.
+pub const ALGORITHM_VERSION: u32 = 2;
 
 /// World seed. One seed plus one [`Config`] plus one [`ALGORITHM_VERSION`]
 /// determines every tile.

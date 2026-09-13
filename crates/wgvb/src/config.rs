@@ -28,11 +28,27 @@ pub enum ConfigError {
     },
     #[error("fbm octaves must be in 1..=16, got {0}")]
     OctaveCount(u8),
+    #[error("elevation contrast passes must be in 0..=4, got {0}")]
+    PassCount(u8),
+    #[error("{field} ({value}) must be greater than {below} ({limit})")]
+    NotAscending {
+        field: &'static str,
+        value: f64,
+        below: &'static str,
+        limit: f64,
+    },
 }
 
 /// Largest accepted fbm octave count. More octaves than this cannot add detail
 /// at any wavelength the world can express, and each one costs a sample.
 pub const MAX_FBM_OCTAVES: u8 = 16;
+
+/// Largest accepted elevation shaping pass count.
+///
+/// Four passes at full contrast steepen the middle of the scale by more than
+/// five, which already leaves almost every tile at one extreme or the other.
+/// More would be a step function with extra arithmetic.
+pub const MAX_CONTRAST_PASSES: u8 = 4;
 
 /// Immutable generator configuration.
 ///
@@ -51,7 +67,28 @@ pub const MAX_FBM_OCTAVES: u8 = 16;
 pub struct Config {
     /// Elevation threshold separating ocean water from potential land, on the
     /// normalized `[-1, +1]` elevation scale.
+    ///
+    /// One of the six [`crate::Elevation`] band thresholds, which must ascend
+    /// strictly: `deep_water_level < sea_level < upland_level <
+    /// highland_level < mountain_level`. See `DESIGN.md` sections 14.1 and 15.
+    ///
+    /// Sea level is a *threshold on a globally stable field*, never a quantile
+    /// of a generated sample. Section 33.5: computing it from the explored area
+    /// would make exploration order change the world. If a target land fraction
+    /// is wanted, move this value and re-measure, which is what the
+    /// distribution tests in `tests/elevation.rs` are for.
     pub sea_level: f64,
+
+    /// Below this elevation a water tile is [`crate::Elevation::DeepWater`].
+    pub deep_water_level: f64,
+    /// Above [`Config::sea_level`] and up to this, land is
+    /// [`crate::Elevation::Lowland`].
+    pub upland_level: f64,
+    /// Up to this, land is [`crate::Elevation::Upland`].
+    pub highland_level: f64,
+    /// Up to this, land is [`crate::Elevation::Highland`]; above it,
+    /// [`crate::Elevation::Mountain`].
+    pub mountain_level: f64,
 
     /// Wavelength of the broad continental land/ocean field.
     pub continental_wavelength_miles: f64,
@@ -61,6 +98,19 @@ pub struct Config {
     pub local_wavelength_miles: f64,
     /// Wavelength of the finest terrain detail.
     pub detail_wavelength_miles: f64,
+
+    /// Wavelength of the ridge structure field of `DESIGN.md` section 10.
+    ///
+    /// The *crests* this produces are the zero crossings of that field, so they
+    /// are spaced about half a wavelength apart rather than one.
+    pub ridge_wavelength_miles: f64,
+    /// How far along a ridge line the structure field is averaged, in miles.
+    ///
+    /// Ridges are elongated by averaging the field at three points spaced this
+    /// far apart along the region's ridge orientation, which stretches features
+    /// along the ridge and leaves them sharp across it. Zero would leave the
+    /// field isotropic and the ridge orientation unused.
+    pub ridge_elongation_miles: f64,
 
     /// Wavelength of the domain-warp offset field.
     pub warp_wavelength_miles: f64,
@@ -93,6 +143,69 @@ pub struct Config {
     pub local_weight: f64,
     /// Weight of the finest terrain detail in the multi-scale composite.
     pub detail_weight: f64,
+    /// Weight of the blended regional elevation bias in the elevation scalar.
+    ///
+    /// This is the `regional_uplift` term of `DESIGN.md` section 10, and it is
+    /// the only term that comes from the region hierarchy rather than from a
+    /// continuous noise field.
+    pub uplift_weight: f64,
+    /// Weight of the ridge structure term in the elevation scalar.
+    pub ridge_weight: f64,
+
+    /// Constant added to the elevation composite before it is shaped.
+    ///
+    /// This is the land-fraction knob, and it is why [`Config::sea_level`] can
+    /// stay at zero where `DESIGN.md` section 14's scale says sea level is.
+    /// A weighted average of zero-mean fields puts about half the world above
+    /// zero; a negative offset sinks the world until the fraction above sea
+    /// level is the intended one.
+    ///
+    /// Section 15 allows the land fraction to be tuned by "the continentalness
+    /// distribution and the sea-level threshold", and section 33.5 forbids
+    /// deriving either from a generated sample. This is the first of those two:
+    /// a fixed shift of the distribution, measured once against the
+    /// distribution tests and then stored, never recomputed at run time.
+    pub elevation_offset: f64,
+
+    /// How hard one shaping pass pushes the elevation composite away from sea
+    /// level, in `[0, 1]`.
+    ///
+    /// A weighted average of fields that are each in `[-1, +1]` clusters near
+    /// zero: with the alpha defaults, ninety per cent of the composite lies
+    /// within a quarter of the scale, which would leave a world with no deep
+    /// ocean and no mountains. One pass is the odd polynomial
+    /// `x + contrast * (x - x^3) / 2`, which is monotone on `[-1, +1]` for any
+    /// contrast in `[0, 1]`, fixes both ends exactly, and steepens the middle
+    /// by `1 + contrast / 2`. A polynomial rather than an exponent because
+    /// section 25.2 bars `powf`.
+    ///
+    /// Zero disables the shaping. One is the steepest a single pass can be and
+    /// stay monotone — above it the map would fold two elevations onto one — so
+    /// validation rejects more, and [`Config::elevation_contrast_passes`] is
+    /// how the shaping is made stronger than that.
+    pub elevation_contrast: f64,
+
+    /// How many times the shaping pass is applied, in `0..=4`.
+    ///
+    /// A monotone map composed with itself is monotone, and each of these
+    /// passes fixes `-1`, `0`, and `+1`, so the composition does too. Two
+    /// passes at full contrast steepen the middle by `2.25`, which is what the
+    /// alpha defaults need for the top and bottom of the scale to be reachable
+    /// at all.
+    ///
+    /// Paired with [`Config::elevation_contrast`] rather than replacing it: the
+    /// pass count chooses the order of magnitude and the contrast trims within
+    /// it, which together cover the range continuously. Zero of either disables
+    /// the shaping.
+    pub elevation_contrast_passes: u8,
+
+    /// The per-hex elevation step that reads as maximum local relief.
+    ///
+    /// [`crate::Generator::relief`] averages the absolute elevation difference
+    /// to the six neighbors and divides by this, so a smaller value makes more
+    /// of the world read as steep. Named for its unit: elevation units per one
+    /// hex of center-to-center distance.
+    pub relief_reference_delta_per_hex: f64,
 
     /// Macro-region anchor spacing, in hexes.
     pub macro_region_size_hexes: u32,
@@ -128,6 +241,19 @@ impl Default for Config {
         Config {
             sea_level: 0.0,
 
+            // Measured against `tests/elevation.rs` rather than guessed. Sea
+            // level stays at zero, where section 14's scale says it is, and
+            // `elevation_offset` is what puts 29 per cent of the world above
+            // it. The remaining thresholds then give, as a share of the world:
+            // 54 per cent deep water, 17 shallow, 16 lowland, 9 upland, 3
+            // highland, and 1 mountain — a shelf that is a fringe of the ocean
+            // rather than half of it, and land bands that fall away with
+            // height.
+            deep_water_level: -0.15,
+            upland_level: 0.18,
+            highland_level: 0.35,
+            mountain_level: 0.48,
+
             // 1,000 hexes.
             continental_wavelength_miles: 6_000.0,
             // 300 hexes.
@@ -136,6 +262,12 @@ impl Default for Config {
             local_wavelength_miles: 120.0,
             // 6 hexes.
             detail_wavelength_miles: 36.0,
+
+            // 80 hexes, so crests land roughly 40 hexes apart. That sits inside
+            // the 40-200 hex "regional relief" row of the section 10 table.
+            ridge_wavelength_miles: 480.0,
+            // 40 hexes of directional averaging along the ridge line.
+            ridge_elongation_miles: 240.0,
 
             // 200 hexes, warping by up to 15 hexes.
             warp_wavelength_miles: 1_200.0,
@@ -153,8 +285,29 @@ impl Default for Config {
             // above it, so broad structure dominates and detail textures it.
             continental_weight: 1.0,
             regional_weight: 0.5,
-            local_weight: 0.25,
-            detail_weight: 0.125,
+            local_weight: 0.15,
+            detail_weight: 0.06,
+
+            // Uplift sits between the two coarse noise scales, because that is
+            // where the anchor lattice sits: 512 and 128 hexes are 3,072 and
+            // 768 miles. Ridges are weaker again, so a mountain belt shapes a
+            // continent rather than inventing one.
+            uplift_weight: 0.4,
+            ridge_weight: 0.3,
+
+            // Measured, not guessed: the unshaped composite has its 71st
+            // percentile at about +0.13, so sinking the world by that much puts
+            // a bit under a third of it above sea level. See
+            // `tests/elevation.rs`.
+            elevation_offset: -0.13,
+            elevation_contrast: 1.0,
+            elevation_contrast_passes: 2,
+
+            // Measured: the mean absolute step between neighbors is about
+            // 0.012 and the steepest ground reaches 0.045, so a reference of
+            // 0.04 puts typical ground around a third of the way up the relief
+            // scale and leaves the top of it for genuinely steep places.
+            relief_reference_delta_per_hex: 0.04,
 
             macro_region_size_hexes: DEFAULT_MACRO_REGION_SIZE_HEXES,
             region_size_hexes: DEFAULT_REGION_SIZE_HEXES,
@@ -176,7 +329,33 @@ impl Config {
     /// deterministic. `NaN` and infinities are rejected here, which is what
     /// keeps them out of the configuration fingerprint.
     pub fn validate(&self) -> Result<(), ConfigError> {
+        // The band ladder, in ascending order. Each threshold is checked for
+        // range before it is checked against the one below it, so a not-a-number
+        // is reported as `NotFinite` rather than silently failing a comparison.
+        in_range("deep_water_level", self.deep_water_level, -1.0, 1.0)?;
         in_range("sea_level", self.sea_level, -1.0, 1.0)?;
+        in_range("upland_level", self.upland_level, -1.0, 1.0)?;
+        in_range("highland_level", self.highland_level, -1.0, 1.0)?;
+        in_range("mountain_level", self.mountain_level, -1.0, 1.0)?;
+        let ladder = [
+            ("deep_water_level", self.deep_water_level),
+            ("sea_level", self.sea_level),
+            ("upland_level", self.upland_level),
+            ("highland_level", self.highland_level),
+            ("mountain_level", self.mountain_level),
+        ];
+        for pair in ladder.windows(2) {
+            let (below, limit) = pair[0];
+            let (field, value) = pair[1];
+            if value <= limit {
+                return Err(ConfigError::NotAscending {
+                    field,
+                    value,
+                    below,
+                    limit,
+                });
+            }
+        }
 
         positive(
             "continental_wavelength_miles",
@@ -185,6 +364,8 @@ impl Config {
         positive("regional_wavelength_miles", self.regional_wavelength_miles)?;
         positive("local_wavelength_miles", self.local_wavelength_miles)?;
         positive("detail_wavelength_miles", self.detail_wavelength_miles)?;
+        positive("ridge_wavelength_miles", self.ridge_wavelength_miles)?;
+        positive("ridge_elongation_miles", self.ridge_elongation_miles)?;
 
         positive("warp_wavelength_miles", self.warp_wavelength_miles)?;
         positive("warp_strength_miles", self.warp_strength_miles)?;
@@ -208,6 +389,18 @@ impl Config {
         positive("regional_weight", self.regional_weight)?;
         positive("local_weight", self.local_weight)?;
         positive("detail_weight", self.detail_weight)?;
+        positive("uplift_weight", self.uplift_weight)?;
+        positive("ridge_weight", self.ridge_weight)?;
+
+        in_range("elevation_offset", self.elevation_offset, -1.0, 1.0)?;
+        in_range("elevation_contrast", self.elevation_contrast, 0.0, 1.0)?;
+        if self.elevation_contrast_passes > MAX_CONTRAST_PASSES {
+            return Err(ConfigError::PassCount(self.elevation_contrast_passes));
+        }
+        positive(
+            "relief_reference_delta_per_hex",
+            self.relief_reference_delta_per_hex,
+        )?;
 
         positive_size("macro_region_size_hexes", self.macro_region_size_hexes)?;
         positive_size("region_size_hexes", self.region_size_hexes)?;
@@ -309,6 +502,8 @@ mod tests {
             ("regional", c.regional_wavelength_miles),
             ("local", c.local_wavelength_miles),
             ("detail", c.detail_wavelength_miles),
+            ("ridge", c.ridge_wavelength_miles),
+            ("ridge elongation", c.ridge_elongation_miles),
             ("warp", c.warp_wavelength_miles),
             ("detail warp", c.detail_warp_wavelength_miles),
         ] {
@@ -327,6 +522,10 @@ mod tests {
     fn float_fields() -> Vec<FloatSetter> {
         vec![
             ("sea_level", |c, v| c.sea_level = v),
+            ("deep_water_level", |c, v| c.deep_water_level = v),
+            ("upland_level", |c, v| c.upland_level = v),
+            ("highland_level", |c, v| c.highland_level = v),
+            ("mountain_level", |c, v| c.mountain_level = v),
             ("continental_wavelength_miles", |c, v| {
                 c.continental_wavelength_miles = v
             }),
@@ -338,6 +537,12 @@ mod tests {
             }),
             ("detail_wavelength_miles", |c, v| {
                 c.detail_wavelength_miles = v
+            }),
+            ("ridge_wavelength_miles", |c, v| {
+                c.ridge_wavelength_miles = v
+            }),
+            ("ridge_elongation_miles", |c, v| {
+                c.ridge_elongation_miles = v
             }),
             ("warp_wavelength_miles", |c, v| c.warp_wavelength_miles = v),
             ("warp_strength_miles", |c, v| c.warp_strength_miles = v),
@@ -351,6 +556,13 @@ mod tests {
             ("regional_weight", |c, v| c.regional_weight = v),
             ("local_weight", |c, v| c.local_weight = v),
             ("detail_weight", |c, v| c.detail_weight = v),
+            ("uplift_weight", |c, v| c.uplift_weight = v),
+            ("ridge_weight", |c, v| c.ridge_weight = v),
+            ("elevation_offset", |c, v| c.elevation_offset = v),
+            ("elevation_contrast", |c, v| c.elevation_contrast = v),
+            ("relief_reference_delta_per_hex", |c, v| {
+                c.relief_reference_delta_per_hex = v
+            }),
             ("fbm_lacunarity", |c, v| c.fbm_lacunarity = v),
             ("fbm_gain", |c, v| c.fbm_gain = v),
             ("macro_region_influence", |c, v| {
@@ -382,6 +594,8 @@ mod tests {
             "regional_wavelength_miles",
             "local_wavelength_miles",
             "detail_wavelength_miles",
+            "ridge_wavelength_miles",
+            "ridge_elongation_miles",
             "warp_wavelength_miles",
             "warp_strength_miles",
             "detail_warp_wavelength_miles",
@@ -390,6 +604,9 @@ mod tests {
             "regional_weight",
             "local_weight",
             "detail_weight",
+            "uplift_weight",
+            "ridge_weight",
+            "relief_reference_delta_per_hex",
             "fbm_gain",
             "macro_region_influence",
             "region_influence",
@@ -411,39 +628,100 @@ mod tests {
     }
 
     #[test]
-    fn sea_level_outside_the_normalized_range_is_rejected() {
-        for bad in [1.000_001, -1.000_001, 5.0, -5.0] {
+    fn a_band_threshold_outside_the_normalized_range_is_rejected() {
+        for field in [
+            "deep_water_level",
+            "sea_level",
+            "upland_level",
+            "highland_level",
+            "mountain_level",
+        ] {
+            for bad in [1.000_001, -1.000_001, 5.0, -5.0] {
+                let mut config = Config::default();
+                let (_, set) = float_fields()
+                    .into_iter()
+                    .find(|(name, _)| *name == field)
+                    .unwrap();
+                set(&mut config, bad);
+                let error = config
+                    .validate()
+                    .expect_err("an out-of-range band threshold was accepted");
+                assert!(
+                    matches!(
+                        error,
+                        ConfigError::OutOfRange {
+                            field: f,
+                            lo: -1.0,
+                            hi: 1.0,
+                            ..
+                        } if f == field
+                    ),
+                    "{field} with {bad} produced {error:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_band_ladder_must_ascend_strictly() {
+        // Section 14.1's bands are a ladder: an out-of-order threshold would
+        // make one band unreachable, and a classifier that can never return a
+        // variant is a silently broken world rather than a compile error.
+        let ordered = [
+            "deep_water_level",
+            "sea_level",
+            "upland_level",
+            "highland_level",
+            "mountain_level",
+        ];
+        let baseline = Config::default();
+        let values = [
+            baseline.deep_water_level,
+            baseline.sea_level,
+            baseline.upland_level,
+            baseline.highland_level,
+            baseline.mountain_level,
+        ];
+        for pair in values.windows(2) {
+            assert!(pair[0] < pair[1], "the defaults are not ascending");
+        }
+
+        // Push each threshold down onto the one below it, and then past it.
+        for index in 1..ordered.len() {
+            for offset in [0.0, 0.1] {
+                let mut config = Config::default();
+                let (_, set) = float_fields()
+                    .into_iter()
+                    .find(|(name, _)| *name == ordered[index])
+                    .unwrap();
+                set(&mut config, values[index - 1] - offset);
+                let error = config
+                    .validate()
+                    .expect_err("a non-ascending ladder was accepted");
+                assert!(
+                    matches!(
+                        error,
+                        ConfigError::NotAscending { field, below, .. }
+                            if field == ordered[index] && below == ordered[index - 1]
+                    ),
+                    "{} at {} produced {error:?}",
+                    ordered[index],
+                    values[index - 1] - offset
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_sea_level_that_keeps_the_ladder_ordered_is_accepted() {
+        // Sea level is the tuning knob for land fraction, so moving it within
+        // the ladder must not need any other edit.
+        for good in [-0.1, -0.05, 0.0, 0.1, 0.17] {
             let config = Config {
-                sea_level: bad,
+                sea_level: good,
                 ..Config::default()
             };
-            let error = config
-                .validate()
-                .expect_err("an out-of-range sea level was accepted");
-            assert!(
-                matches!(
-                    error,
-                    ConfigError::OutOfRange {
-                        field: "sea_level",
-                        lo: -1.0,
-                        hi: 1.0,
-                        ..
-                    }
-                ),
-                "{bad} produced {error:?}"
-            );
-        }
-        // The endpoints themselves are legal.
-        for good in [-1.0, 0.0, 1.0] {
-            assert_eq!(
-                Config {
-                    sea_level: good,
-                    ..Config::default()
-                }
-                .validate(),
-                Ok(()),
-                "{good}"
-            );
+            assert_eq!(config.validate(), Ok(()), "{good}");
         }
     }
 

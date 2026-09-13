@@ -24,5 +24,15 @@ serde.workspace = true
 [dev-dependencies]
 ciborium.workspace = true
 
+# `rayon` is a dev-dependency only, and deliberately so. Appendix B says the
+# core crate depends on exactly `serde` and `thiserror`, and section 20 grants
+# permission to parallelize a batch fill rather than requiring the library to
+# ship one: every tile is a pure function of its own coordinate written to its
+# own slot, so a caller can split `tiles_into` any way it likes. What the
+# library owes that caller is proof, and section 30.3 asks for it as a test —
+# a rayon fill and a sequential fill agreeing bit for bit. That test needs
+# rayon; a consumer's dependency graph does not.
+rayon.workspace = true
+
 [lints]
 workspace = true

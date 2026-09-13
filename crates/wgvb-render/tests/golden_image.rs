@@ -19,13 +19,22 @@
 //! rounded. Boundary behavior is covered by the unit tests in `wgvb-render`,
 //! which check that every pixel is attributed to exactly one tile.
 //!
-//! # The region-influence row
+//! # The nearly flat rows
 //!
-//! Its twenty pixels differ from one another by a single palette step, because
-//! a five-by-four window is twenty tiles out of a 128-hex region: the layer is
-//! *supposed* to be almost flat at this scale, and a window where it was not
-//! would mean the blend had collapsed toward per-tile noise. What the row pins
-//! is that the near-flat value is the recorded one.
+//! The `region-influence` and `roughness` rows differ from one another by a
+//! single palette step across the whole window, because a five-by-four window
+//! is twenty tiles out of a 128-hex region: those layers are *supposed* to be
+//! almost flat at this scale, and a window where they were not would mean the
+//! blend had collapsed toward per-tile noise. What those rows pin is that the
+//! near-flat value is the recorded one.
+//!
+//! # Recorded for algorithm version 2
+//!
+//! Every row moved when phase 4 bumped `ALGORITHM_VERSION` — see the
+//! compatibility note in `wgvb/tests/golden.rs` — and four rows are new
+//! layers. `RENDER_VERSION` did **not** move: the renderer draws the same
+//! palette through the same layout, and what changed is the world underneath
+//! it. That distinction is the reason the two versions are separate numbers.
 //!
 //! # If these values move
 //!
@@ -50,7 +59,7 @@ const GOLDEN_SIZE: (u32, u32) = (48, 47);
 /// Tile-center colors, in ascending `(col, row)` order — the same order the
 /// renderer walks the viewport in.
 #[rustfmt::skip]
-const GOLDEN: [(Layer, [[u8; 4]; 20]); 6] = [
+const GOLDEN: [(Layer, [[u8; 4]; 20]); 10] = [
     // continentalness
     (Layer::Continentalness, [
         [36, 96, 158, 255], [36, 94, 156, 255], [35, 93, 155, 255], [34, 92, 154, 255],
@@ -85,11 +94,43 @@ const GOLDEN: [(Layer, [[u8; 4]; 20]); 6] = [
     ]),
     // elevation-raw
     (Layer::ElevationRaw, [
-        [54, 125, 183, 255], [54, 125, 183, 255], [54, 125, 183, 255], [56, 128, 186, 255],
-        [53, 123, 181, 255], [53, 124, 182, 255], [52, 122, 181, 255], [53, 122, 181, 255],
-        [53, 123, 181, 255], [53, 123, 181, 255], [53, 123, 182, 255], [53, 124, 182, 255],
-        [53, 123, 182, 255], [54, 124, 182, 255], [54, 124, 183, 255], [52, 121, 180, 255],
-        [53, 124, 182, 255], [55, 127, 185, 255], [52, 121, 180, 255], [53, 124, 182, 255],
+        [60, 131, 188, 255], [56, 128, 186, 255], [56, 127, 185, 255], [60, 132, 188, 255],
+        [56, 128, 186, 255], [56, 128, 186, 255], [55, 126, 184, 255], [55, 126, 184, 255],
+        [56, 128, 186, 255], [55, 127, 185, 255], [55, 127, 185, 255], [55, 126, 185, 255],
+        [58, 130, 187, 255], [56, 128, 186, 255], [56, 128, 186, 255], [54, 125, 183, 255],
+        [58, 130, 187, 255], [61, 133, 188, 255], [54, 125, 183, 255], [55, 126, 184, 255],
+    ]),
+    // elevation
+    (Layer::Elevation, [
+        [18, 65, 131, 255], [17, 64, 129, 255], [17, 63, 129, 255], [17, 64, 130, 255],
+        [17, 64, 130, 255], [17, 63, 129, 255], [16, 61, 127, 255], [16, 62, 127, 255],
+        [17, 63, 129, 255], [16, 62, 128, 255], [16, 62, 128, 255], [16, 62, 128, 255],
+        [18, 65, 131, 255], [17, 64, 129, 255], [16, 63, 128, 255], [16, 61, 126, 255],
+        [17, 64, 130, 255], [18, 65, 130, 255], [16, 61, 127, 255], [16, 62, 128, 255],
+    ]),
+    // relief
+    (Layer::Relief, [
+        [96, 135, 70, 255], [95, 135, 70, 255], [101, 133, 70, 255], [98, 134, 70, 255],
+        [124, 124, 70, 255], [93, 136, 70, 255], [95, 135, 70, 255], [98, 134, 70, 255],
+        [105, 132, 70, 255], [91, 137, 70, 255], [138, 159, 98, 255], [97, 135, 70, 255],
+        [112, 129, 70, 255], [90, 137, 70, 255], [103, 132, 70, 255], [104, 132, 70, 255],
+        [124, 153, 90, 255], [103, 132, 70, 255], [106, 131, 70, 255], [110, 130, 70, 255],
+    ]),
+    // ridge
+    (Layer::Ridge, [
+        [98, 166, 206, 255], [73, 144, 194, 255], [86, 155, 200, 255], [91, 160, 202, 255],
+        [199, 189, 140, 255], [80, 149, 197, 255], [63, 134, 189, 255], [81, 151, 198, 255],
+        [146, 188, 198, 255], [73, 143, 194, 255], [76, 146, 195, 255], [102, 169, 207, 255],
+        [156, 166, 108, 255], [114, 180, 213, 255], [92, 160, 203, 255], [106, 173, 209, 255],
+        [169, 172, 116, 255], [205, 195, 149, 255], [116, 182, 214, 255], [203, 192, 145, 255],
+    ]),
+    // roughness
+    (Layer::Roughness, [
+        [29, 84, 147, 255], [30, 84, 148, 255], [30, 85, 148, 255], [30, 85, 148, 255],
+        [29, 84, 147, 255], [29, 84, 147, 255], [29, 84, 147, 255], [30, 84, 148, 255],
+        [29, 84, 147, 255], [29, 84, 147, 255], [29, 84, 147, 255], [30, 84, 148, 255],
+        [29, 83, 147, 255], [29, 84, 147, 255], [29, 84, 147, 255], [29, 84, 147, 255],
+        [29, 83, 147, 255], [29, 83, 147, 255], [29, 84, 147, 255], [29, 84, 147, 255],
     ]),
     // region-influence
     (Layer::RegionInfluence, [

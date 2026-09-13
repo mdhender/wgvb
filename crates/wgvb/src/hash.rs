@@ -55,6 +55,12 @@ pub const DOM_TERRAIN_DETAIL: u64 = domain(b"terrain-detail");
 pub const DOM_REGION_STYLE: u64 = domain(b"region-style");
 /// Domain: ridge orientation, stored as a unit vector rather than an angle.
 pub const DOM_RIDGE_ORIENTATION: u64 = domain(b"ridge-orientation");
+/// Domain: the ridge structure field of `DESIGN.md` section 10.
+///
+/// Distinct from [`DOM_RIDGE_ORIENTATION`], which chooses which *way* a ridge
+/// runs at a region anchor. This one is the continuous field whose zero
+/// crossings become the crests, sampled along that direction.
+pub const DOM_RIDGE_STRUCTURE: u64 = domain(b"ridge-structure");
 /// Domain: basin influence.
 pub const DOM_BASIN: u64 = domain(b"basin");
 /// Domain: volcanic tendency.
@@ -231,6 +237,7 @@ mod tests {
         assert_eq!(DOM_TERRAIN_DETAIL, 0xa90f_24aa_e7b9_a828);
         assert_eq!(DOM_REGION_STYLE, 0x4115_6f2b_a1d9_a7d5);
         assert_eq!(DOM_RIDGE_ORIENTATION, 0x0f5b_ac88_66b1_037b);
+        assert_eq!(DOM_RIDGE_STRUCTURE, 0xe29a_7e33_1d9b_a86c);
         assert_eq!(DOM_BASIN, 0xd6e8_5182_6dfb_0aa6);
         assert_eq!(DOM_VOLCANIC, 0x3208_6c8b_90c6_35b8);
         assert_eq!(DOM_WARP_X, 0xa1e1_8632_3c66_62fa);
@@ -256,6 +263,7 @@ mod tests {
             DOM_TERRAIN_DETAIL,
             DOM_REGION_STYLE,
             DOM_RIDGE_ORIENTATION,
+            DOM_RIDGE_STRUCTURE,
             DOM_BASIN,
             DOM_VOLCANIC,
             DOM_WARP_X,

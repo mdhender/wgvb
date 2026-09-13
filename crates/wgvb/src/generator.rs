@@ -9,15 +9,19 @@
 //! break the build, which is the point — caches must be concurrency-safe,
 //! optional, or outside the core.
 //!
-//! Phase 2 adds [`Generator::sample`], the diagnostic scalar view of the
-//! continuous fields that exist so far. `tile`, `elevation_at`, and `relief`
-//! arrive with the classifications they depend on, in phases 4 through 6; when
-//! they do, `tile` will have nothing to re-normalize because [`Coord`] already
-//! guarantees canonical input.
+//! Phase 4 adds [`Generator::elevation_at`], [`Generator::relief`],
+//! [`Generator::tile`], and the batch API. `tile` has nothing to re-normalize
+//! because [`Coord`] already guarantees canonical input, and it cannot recurse
+//! because both it and `relief` reach the field composition through the private
+//! [`Generator::elevation_scalar`] rather than through each other. See
+//! `DESIGN.md` section 18.
 
 use crate::field::Fields;
-use crate::region::{self, Param};
-use crate::{Config, ConfigError, Coord, RegionParams, Seed, Vec2, axial_to_world};
+use crate::relief;
+use crate::{
+    Climate, Config, ConfigError, Coord, DIRECTION_COUNT, Elevation, HeatBand, MoistureBand,
+    RegionParams, Seed, Terrain, Tile, Vec2, elevation, region,
+};
 
 /// The continuous scalar fields at one coordinate.
 ///
@@ -42,29 +46,62 @@ pub struct Sample {
     /// The finest terrain texture.
     pub detail: f64,
 
-    /// The weighted multi-scale sum of section 10, normalized to `[-1, +1]`.
+    /// The ridge structure term of `DESIGN.md` section 10, before the region
+    /// roughness that scales it in the composite.
     ///
-    /// This is *not* the elevation of [`crate::Tile`]. Phase 4 defines
-    /// elevation, including sea level and the shaping that makes coastlines
-    /// read as coastlines; this is the unshaped composite the tuning renderer
-    /// draws in the meantime.
+    /// Elongated along the region's ridge orientation and ridged, so a crest is
+    /// a line rather than a peak. Near `+1` on a crest and near `-1` in the
+    /// trough between two of them.
+    pub ridge: f64,
+
+    /// The weighted sum of the four *noise* scales alone, in `[-1, +1]`.
+    ///
+    /// This is **not** the elevation of [`crate::Tile`], and it is not a
+    /// stepping stone to it either: [`Sample::elevation`] is, and it adds
+    /// region uplift, ridge structure, the sea-level offset, and the contrast
+    /// shaping on top of the same four fields.
+    ///
+    /// It stays in the public sample because it is the layer that separates
+    /// "the noise is wrong" from "the composition is wrong" when a rendered
+    /// window looks off. Nothing in the generator reads it.
     pub elevation_raw: f64,
 
     /// The blended regional elevation bias of `DESIGN.md` sections 11 and 12,
     /// in `[-1, +1]`.
     ///
-    /// **Not folded into [`Sample::elevation_raw`] yet.** Regions bias fields;
-    /// deciding how much uplift a bias is worth is elevation's job, and
-    /// elevation arrives in phase 4. Carrying the bias separately here means
-    /// the tuning renderer can show the region field on its own — which is how
-    /// "no visible implementation-region boundaries" is actually checked —
-    /// without phase 3 quietly moving every elevation value in the golden
-    /// table.
+    /// Deliberately *not* folded into [`Sample::elevation_raw`], which is the
+    /// noise composite and nothing else. [`Sample::elevation`] is where this
+    /// bias becomes uplift, weighted by
+    /// [`crate::Config::uplift_weight`]: regions bias fields, and how much
+    /// uplift a bias is worth is elevation's decision, not the region's.
+    ///
+    /// Carrying it separately is also how "no visible implementation-region
+    /// boundaries" is checked — the tuning renderer can draw the region field
+    /// on its own.
     ///
     /// [`Generator::region_params`] returns this alongside the climate,
     /// roughness, basin, volcanic, variation, and ridge parameters that phases
     /// 5 and 6 consume.
     pub regional_uplift: f64,
+
+    /// The blended region roughness bias, in `[-1, +1]`.
+    ///
+    /// Carried because it is the reason a ridge belt is strong in one place and
+    /// absent a few hundred miles away, and a tuning renderer that shows the
+    /// ridge term without it cannot explain what it is looking at.
+    pub roughness: f64,
+
+    /// The elevation scalar of `DESIGN.md` section 14, in `[-1, +1]`.
+    ///
+    /// Bit-identical to [`Generator::elevation_at`] and to
+    /// [`crate::Tile::elevation_value`] at the same coordinate: all three are
+    /// the same function of the same inputs, not three implementations that
+    /// agree.
+    ///
+    /// Unlike [`Sample::elevation_raw`] this is the real thing — region uplift,
+    /// ridge structure, and the contrast shaping included — and it is what sea
+    /// level and the band ladder are compared against.
+    pub elevation: f64,
 }
 
 /// An immutable, thread-safe world generator.
@@ -133,40 +170,149 @@ impl Generator {
     ///
     /// The composite accumulates coarsest to finest in a fixed order, per
     /// `DESIGN.md` section 25.3.
+    ///
+    /// This is the diagnostic view. It costs one elevation evaluation and no
+    /// neighbor evaluations, so it does not carry relief; ask
+    /// [`Generator::relief`] or [`Generator::tile`] for that.
     #[must_use]
     pub fn sample(&self, coord: Coord) -> Sample {
-        let world = axial_to_world(coord);
-
-        let continentalness = self.fields.continentalness.sample(world.x, world.y);
-        let regional = self.fields.regional.sample(world.x, world.y);
-        let local = self.fields.local.sample(world.x, world.y);
-        let detail = self.fields.detail.sample(world.x, world.y);
-
-        let config = &self.config;
-        let mut total = 0.0_f64;
-        let mut weight = 0.0_f64;
-        total += config.continental_weight * continentalness;
-        weight += config.continental_weight;
-        total += config.regional_weight * regional;
-        weight += config.regional_weight;
-        total += config.local_weight * local;
-        weight += config.local_weight;
-        total += config.detail_weight * detail;
-        weight += config.detail_weight;
-
+        let inputs = elevation::inputs(&self.fields, self.seed, &self.config, coord);
         Sample {
             coord,
-            world,
-            continentalness,
-            regional,
-            local,
-            detail,
-            elevation_raw: total / weight,
-            regional_uplift: region::scalar(self.seed, config, coord, Param::ElevationBias),
+            world: inputs.world,
+            continentalness: inputs.continentalness,
+            regional: inputs.regional,
+            local: inputs.local,
+            detail: inputs.detail,
+            ridge: inputs.ridge,
+            elevation_raw: elevation::raw_composite(&self.config, &inputs),
+            regional_uplift: inputs.uplift,
+            roughness: inputs.roughness,
+            elevation: elevation::scalar(&self.config, &inputs),
         }
     }
 
-    /// The deterministic region parameters at one canonical coordinate.
+    /// The elevation scalar at one canonical coordinate, in `[-1, +1]`.
+    ///
+    /// `-1.0` is deep ocean and `+1.0` is extreme highland; sea level is
+    /// [`Config::sea_level`], which is configurable and is not required to be
+    /// zero. See `DESIGN.md` section 14.
+    #[must_use]
+    pub fn elevation_at(&self, coord: Coord) -> f64 {
+        self.elevation_scalar(coord)
+    }
+
+    /// Local relief at one canonical coordinate, in `[0, 1]`.
+    ///
+    /// Zero is flat ground and one is as steep as
+    /// [`Config::relief_reference_delta_per_hex`] says a slope can usefully
+    /// read. Estimated from the six neighboring elevations in fixed direction
+    /// order `0..6`, per `DESIGN.md` sections 18 and 25.3.
+    ///
+    /// This costs seven elevation evaluations. That is the price of a stateless
+    /// generator and it is deliberate: section 26 asks for a profile before a
+    /// cache, and a cache would have to live outside this type.
+    #[must_use]
+    pub fn relief(&self, coord: Coord) -> f64 {
+        let here = self.elevation_scalar(coord);
+        relief::from_neighbors(
+            here,
+            &self.neighbor_elevations(coord),
+            self.config.relief_reference_delta_per_hex,
+        )
+    }
+
+    /// The generated tile at one canonical coordinate.
+    ///
+    /// A pure function of the seed, the coordinate,
+    /// [`crate::ALGORITHM_VERSION`], and the configuration. [`Coord`] has no
+    /// constructor that skips normalization, so there is nothing here to
+    /// re-normalize.
+    ///
+    /// # Phase 4 completeness
+    ///
+    /// Elevation and relief are generated; climate and terrain are provisional
+    /// and are documented as such on [`Tile::climate`] and [`Tile::terrain`].
+    #[must_use]
+    pub fn tile(&self, coord: Coord) -> Tile {
+        let elevation_value = self.elevation_scalar(coord);
+        let relief_value = relief::from_neighbors(
+            elevation_value,
+            &self.neighbor_elevations(coord),
+            self.config.relief_reference_delta_per_hex,
+        );
+        let band = elevation::classify(&self.config, elevation_value);
+
+        Tile {
+            coord,
+            elevation_value,
+            heat_value: 0.0,
+            moisture_value: 0.0,
+            relief_value,
+            elevation: band,
+            climate: Climate {
+                heat: HeatBand::Temperate,
+                moisture: MoistureBand::Moderate,
+            },
+            terrain: provisional_terrain(band),
+        }
+    }
+
+    /// Fills `out` with one tile per coordinate.
+    ///
+    /// Every tile is a pure function of its own coordinate written to its own
+    /// slot, so the result is bit-identical to calling [`Generator::tile`] in
+    /// any order, on any number of threads. `DESIGN.md` section 20 grants
+    /// permission to parallelize a fill for exactly that reason, and forbids
+    /// any batch operation that *accumulates* across tiles — a sum, a min or
+    /// max, a histogram — because a work-stealing split would then reach the
+    /// result. Nothing here accumulates, and nothing added here may.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `coords` and `out` have different lengths.
+    pub fn tiles_into(&self, coords: &[Coord], out: &mut [Tile]) {
+        assert_eq!(
+            coords.len(),
+            out.len(),
+            "tiles_into needs one output slot per coordinate"
+        );
+        for (coord, slot) in coords.iter().zip(out.iter_mut()) {
+            *slot = self.tile(*coord);
+        }
+    }
+
+    /// One tile per coordinate.
+    ///
+    /// Prefer [`Generator::tiles_into`] in a hot path: [`Tile`] is `Copy`, so a
+    /// caller can reuse one buffer across frames with no allocation.
+    #[must_use]
+    pub fn tiles(&self, coords: &[Coord]) -> Vec<Tile> {
+        coords.iter().map(|coord| self.tile(*coord)).collect()
+    }
+
+    /// Every tile within `radius` steps of `center`, in hex distance.
+    ///
+    /// The result has `1 + 3 * radius * (radius + 1)` entries, ordered by the
+    /// offset from the center: ascending `dq`, and within that ascending `dr`.
+    /// The order is part of the contract because a caller indexing the result
+    /// needs one, and because section 29 asks rendering to consume coordinates
+    /// in a stable order.
+    ///
+    /// Coordinates are normalized, so a region straddling a wrapped edge
+    /// returns the canonical representative of each tile.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `radius` exceeds [`crate::WORLD_RADIUS`]. Beyond that the
+    /// requested hexagon is larger than the world and would name some tiles
+    /// more than once.
+    #[must_use]
+    pub fn region(&self, center: Coord, radius: u32) -> Vec<Tile> {
+        self.tiles(&region_coords(center, radius))
+    }
+
+    /// The deterministic region parameters at one canonical coordinate.    /// The deterministic region parameters at one canonical coordinate.
     ///
     /// Blended across the anchors around the tile at each level, so there is no
     /// addressing cell a tile belongs to wholesale and no boundary to see. See
@@ -180,6 +326,76 @@ impl Generator {
     #[must_use]
     pub fn region_params(&self, coord: Coord) -> RegionParams {
         region::params(self.seed, &self.config, coord)
+    }
+
+    /// The elevation scalar. The one place elevation is composed.
+    ///
+    /// Private on purpose. `DESIGN.md` section 18 forbids calling `tile()` from
+    /// inside `tile()`, and Rust will not catch that; routing both
+    /// [`Generator::tile`] and [`Generator::relief`] through this function means
+    /// the recursion cannot be written rather than merely being discouraged.
+    fn elevation_scalar(&self, coord: Coord) -> f64 {
+        let inputs = elevation::inputs(&self.fields, self.seed, &self.config, coord);
+        elevation::scalar(&self.config, &inputs)
+    }
+
+    /// The six neighboring elevation scalars, indexed by direction.
+    ///
+    /// Filled in direction order `0..6`, which is the order
+    /// [`crate::relief::from_neighbors`] then accumulates in. Section 25.3.
+    fn neighbor_elevations(&self, coord: Coord) -> [f64; DIRECTION_COUNT] {
+        let mut out = [0.0_f64; DIRECTION_COUNT];
+        for (index, slot) in out.iter_mut().enumerate() {
+            let direction = i32::try_from(index).expect("DIRECTION_COUNT is 6");
+            *slot = self.elevation_scalar(coord.neighbor(direction));
+        }
+        out
+    }
+}
+
+/// The coordinates of a hexagonal region, in the documented order.
+///
+/// Split out from [`Generator::region`] so the ordering can be tested without a
+/// generator, and so the panic message is attached to the thing that decides
+/// the shape.
+fn region_coords(center: Coord, radius: u32) -> Vec<Coord> {
+    let radius = i64::from(radius);
+    assert!(
+        radius <= crate::WORLD_RADIUS,
+        "a region radius above WORLD_RADIUS would name a tile more than once"
+    );
+
+    let q = i64::from(center.q());
+    let r = i64::from(center.r());
+    let mut out = Vec::new();
+    for dq in -radius..=radius {
+        let low = (-radius).max(-dq - radius);
+        let high = radius.min(-dq + radius);
+        for dr in low..=high {
+            out.push(Coord::new(q + dq, r + dr));
+        }
+    }
+    out
+}
+
+/// A stand-in terrain for phase 4, derived from the elevation band alone.
+///
+/// **Phase 6 replaces this.** Section 17 derives terrain from elevation,
+/// relief, and climate together, and two of those are not generated yet, so
+/// nothing here can distinguish tundra from rainforest — the whole world is
+/// temperate. See [`Tile::terrain`].
+///
+/// A `match` on the band rather than a constant, so a caller sees water where
+/// there is water and the diagnostic images are readable; and a `match` rather
+/// than a lookup table, so adding a band is a compile error here.
+const fn provisional_terrain(band: Elevation) -> Terrain {
+    match band {
+        Elevation::DeepWater => Terrain::DeepOcean,
+        Elevation::ShallowWater => Terrain::ShallowSea,
+        Elevation::Lowland => Terrain::Plains,
+        Elevation::Upland => Terrain::Hills,
+        Elevation::Highland => Terrain::Mountain,
+        Elevation::Mountain => Terrain::Alpine,
     }
 }
 
@@ -207,7 +423,7 @@ mod tests {
     #[test]
     fn new_accepts_a_valid_non_default_configuration() {
         let config = Config {
-            sea_level: -0.25,
+            sea_level: -0.1,
             ..Config::default()
         };
         let g = Generator::new(7, config.clone()).expect("configuration is valid");
@@ -344,6 +560,107 @@ mod tests {
                 assert_eq!(wrapped, canonical);
                 assert_eq!(g.sample(wrapped), g.sample(canonical));
             }
+        }
+    }
+
+    #[test]
+    fn every_public_route_to_elevation_gives_the_same_bits() {
+        // `sample`, `elevation_at`, and `tile` are three doors into one
+        // function. If they ever disagree, one of them has grown its own copy
+        // of the composition.
+        let g = Generator::with_defaults(0x1111_2222);
+        for c in sample_coords() {
+            let sample = g.sample(c);
+            let tile = g.tile(c);
+            assert_eq!(
+                sample.elevation.to_bits(),
+                g.elevation_at(c).to_bits(),
+                "{c:?}"
+            );
+            assert_eq!(
+                tile.elevation_value.to_bits(),
+                g.elevation_at(c).to_bits(),
+                "{c:?}"
+            );
+            assert_eq!(tile.relief_value.to_bits(), g.relief(c).to_bits(), "{c:?}");
+            assert_eq!(tile.coord, c);
+        }
+    }
+
+    #[test]
+    fn relief_is_built_from_neighbor_elevations_and_nothing_else() {
+        // Section 18's pipeline runs one way: raw fields, elevation scalar,
+        // neighbor elevation samples, relief. Rust cannot check that `tile`
+        // does not call `tile`, so this checks the observable consequence —
+        // relief is exactly what the six *elevations* produce, which a
+        // tile-level recursion could not be.
+        let g = Generator::with_defaults(0x3333_4444);
+        for c in sample_coords() {
+            let here = g.elevation_at(c);
+            let mut neighbors = [0.0_f64; DIRECTION_COUNT];
+            for (index, slot) in neighbors.iter_mut().enumerate() {
+                let direction = i32::try_from(index).expect("DIRECTION_COUNT is 6");
+                *slot = g.elevation_at(c.neighbor(direction));
+            }
+            let expected =
+                relief::from_neighbors(here, &neighbors, g.config().relief_reference_delta_per_hex);
+            assert_eq!(g.relief(c).to_bits(), expected.to_bits(), "{c:?}");
+        }
+    }
+
+    #[test]
+    fn every_tile_value_is_finite_and_in_its_documented_range() {
+        let g = Generator::with_defaults(0x5555_6666);
+        for c in sample_coords() {
+            let tile = g.tile(c);
+            for (name, value) in [
+                ("elevation_value", tile.elevation_value),
+                ("heat_value", tile.heat_value),
+                ("moisture_value", tile.moisture_value),
+            ] {
+                assert!(value.is_finite(), "{name} at {c:?} is {value}");
+                assert!((-1.0..=1.0).contains(&value), "{name} at {c:?} is {value}");
+            }
+            assert!(
+                (0.0..=1.0).contains(&tile.relief_value),
+                "relief at {c:?} is {}",
+                tile.relief_value
+            );
+        }
+    }
+
+    #[test]
+    fn the_provisional_terrain_partitions_water_and_land_the_same_way_the_band_does() {
+        // Phase 6 replaces this mapping, but while it stands it must not
+        // contradict the classification it is derived from.
+        let water = [Terrain::DeepOcean, Terrain::ShallowSea];
+        for band in [
+            Elevation::DeepWater,
+            Elevation::ShallowWater,
+            Elevation::Lowland,
+            Elevation::Upland,
+            Elevation::Highland,
+            Elevation::Mountain,
+        ] {
+            assert_eq!(
+                water.contains(&provisional_terrain(band)),
+                band.is_water(),
+                "{band:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_climate_placeholder_is_the_middle_of_both_axes() {
+        // Documented on `Tile::climate` as provisional. A test so that phase 5
+        // has to delete it rather than quietly leave half the world temperate.
+        let g = Generator::with_defaults(1);
+        for c in sample_coords() {
+            let tile = g.tile(c);
+            assert_eq!(tile.climate.heat, HeatBand::Temperate);
+            assert_eq!(tile.climate.moisture, MoistureBand::Moderate);
+            assert_eq!(tile.heat_value, 0.0);
+            assert_eq!(tile.moisture_value, 0.0);
         }
     }
 

@@ -17,6 +17,11 @@
 //!    translations, and where that is not achievable without disproportionate
 //!    complexity, the discontinuity is a documented world-warp seam.
 //!
+//! Relief is not measured here and cannot be: a tile on an edge has a neighbor
+//! across the wrap, so its relief saturates by construction. That is a
+//! consequence of the seam rather than a second seam, and `tests/golden.rs`
+//! pins the saturated values it produces.
+//!
 //! # Why the fields are not periodic yet
 //!
 //! A field is periodic under the mirror translations only if its noise lattice
@@ -40,14 +45,17 @@ use wgvb::{Coord, Generator, Sample, WORLD_RADIUS};
 const SEED: u64 = 0x7777_1111_2222_3333;
 
 /// Every scalar a [`Sample`] carries, named, in a fixed order.
-fn scalars(s: &Sample) -> [(&'static str, f64); 6] {
+fn scalars(s: &Sample) -> [(&'static str, f64); 9] {
     [
         ("continentalness", s.continentalness),
         ("regional", s.regional),
         ("local", s.local),
         ("detail", s.detail),
+        ("ridge", s.ridge),
         ("elevation_raw", s.elevation_raw),
         ("regional_uplift", s.regional_uplift),
+        ("roughness", s.roughness),
+        ("elevation", s.elevation),
     ]
 }
 

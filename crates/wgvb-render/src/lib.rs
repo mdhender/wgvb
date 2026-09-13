@@ -93,10 +93,16 @@ pub fn to_hex(q: Component, r: Component) -> Hex {
 /// A diagnostic scalar layer.
 ///
 /// Only the fields that exist at this phase appear here. Temperature, moisture,
-/// relief, climate, and terrain arrive with the phases that generate them.
+/// climate, and terrain arrive with the phases that generate them; in
+/// particular there is deliberately no terrain layer while
+/// [`wgvb::Tile::terrain`] is provisional, because a terrain image nobody
+/// should trust is worse than no terrain image.
 ///
-/// Every layer reads one scalar out of a [`Sample`], which is what keeps the
-/// renderer from needing a second traversal of the world per layer.
+/// Almost every layer reads one scalar out of a [`Sample`], which is what keeps
+/// the renderer from needing a second traversal of the world per layer.
+/// [`Layer::Relief`] is the exception: relief costs seven elevation
+/// evaluations, so a sample does not carry it and the layer asks the generator
+/// directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Layer {
     Continentalness,
@@ -104,6 +110,30 @@ pub enum Layer {
     Local,
     Detail,
     ElevationRaw,
+    /// The elevation scalar of `DESIGN.md` section 14 — the real one, with
+    /// region uplift, ridge structure, and the contrast shaping folded in.
+    ///
+    /// This is the layer the phase 4 exit condition is read off. What to look
+    /// for over several widely separated windows: oceans that hold together
+    /// rather than dissolving into lakes, coastlines that wander instead of
+    /// following the noise lattice, and lowland giving way to upland inland
+    /// rather than at random.
+    Elevation,
+    /// Local relief, in `[0, 1]`: flat ground at the bottom of the palette,
+    /// steep ground at the top.
+    ///
+    /// Only the upper half of the ramp is used, because relief is unsigned.
+    Relief,
+    /// The ridge structure term, before the region roughness that scales it.
+    ///
+    /// Crests read as bright lines. If they are not lines — if they are blobs,
+    /// or if they run the same way over the whole map — the directional average
+    /// or the blended ridge orientation is not doing its job.
+    Ridge,
+    /// The blended region roughness bias, which is what decides how strongly
+    /// [`Layer::Ridge`] contributes at each tile. Rendered next to the ridge
+    /// layer it explains where the mountain belts are and are not.
+    Roughness,
     /// The blended regional elevation bias of `DESIGN.md` sections 11 and 12 —
     /// the "region influence" layer of section 29.
     ///
@@ -117,12 +147,16 @@ pub enum Layer {
 
 impl Layer {
     /// Every layer, in the order the command line lists them.
-    pub const ALL: [Layer; 6] = [
+    pub const ALL: [Layer; 10] = [
         Layer::Continentalness,
         Layer::Regional,
         Layer::Local,
         Layer::Detail,
         Layer::ElevationRaw,
+        Layer::Elevation,
+        Layer::Relief,
+        Layer::Ridge,
+        Layer::Roughness,
         Layer::RegionInfluence,
     ];
 
@@ -135,6 +169,10 @@ impl Layer {
             Layer::Local => "local",
             Layer::Detail => "detail",
             Layer::ElevationRaw => "elevation-raw",
+            Layer::Elevation => "elevation",
+            Layer::Relief => "relief",
+            Layer::Ridge => "ridge",
+            Layer::Roughness => "roughness",
             Layer::RegionInfluence => "region-influence",
         }
     }
@@ -153,16 +191,37 @@ impl Layer {
             .ok_or_else(|| RenderError::UnknownLayer(name.to_string()))
     }
 
-    /// Reads this layer's scalar out of a sample.
+    /// This layer's scalar at one coordinate.
+    ///
+    /// One generator call for every layer but [`Layer::Relief`], which needs
+    /// the six neighboring elevations and so asks for relief directly rather
+    /// than making every other layer pay for it.
     #[must_use]
-    pub const fn value(self, sample: &Sample) -> f64 {
+    pub fn value(self, generator: &Generator, coord: Coord) -> f64 {
+        match self {
+            Layer::Relief => generator.relief(coord),
+            other => other.of_sample(&generator.sample(coord)),
+        }
+    }
+
+    /// Reads this layer's scalar out of a sample.
+    ///
+    /// # Panics
+    ///
+    /// Panics for [`Layer::Relief`], which a [`Sample`] does not carry. Private
+    /// for that reason; [`Layer::value`] is the total function.
+    fn of_sample(self, sample: &Sample) -> f64 {
         match self {
             Layer::Continentalness => sample.continentalness,
             Layer::Regional => sample.regional,
             Layer::Local => sample.local,
             Layer::Detail => sample.detail,
             Layer::ElevationRaw => sample.elevation_raw,
+            Layer::Elevation => sample.elevation,
+            Layer::Ridge => sample.ridge,
+            Layer::Roughness => sample.roughness,
             Layer::RegionInfluence => sample.regional_uplift,
+            Layer::Relief => unreachable!("relief is not carried by a sample"),
         }
     }
 }
@@ -400,8 +459,8 @@ pub fn render(generator: &Generator, viewport: &Viewport, layer: Layer) -> Image
     let mut colors = vec![BACKGROUND; cols as usize * rows as usize];
     for col in 0..cols {
         for row in 0..rows {
-            let sample = generator.sample(viewport.coord_at(col, row));
-            colors[col as usize * rows as usize + row as usize] = color(layer.value(&sample));
+            let value = layer.value(generator, viewport.coord_at(col, row));
+            colors[col as usize * rows as usize + row as usize] = color(value);
         }
     }
 
@@ -681,10 +740,10 @@ mod tests {
             for col in 0..8 {
                 for row in 0..6 {
                     let (px, py) = viewport.center_pixel(col, row);
-                    let sample = generator.sample(viewport.coord_at(col, row));
+                    let coord = viewport.coord_at(col, row);
                     assert_eq!(
                         image.pixel(px, py),
-                        Some(color(layer.value(&sample))),
+                        Some(color(layer.value(&generator, coord))),
                         "{} at ({col}, {row})",
                         layer.name()
                     );

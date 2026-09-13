@@ -51,7 +51,7 @@ struct Args {
     hex_radius: f32,
 
     /// Scalar layer to draw.
-    #[arg(long, default_value = "elevation-raw", value_parser = parse_layer)]
+    #[arg(long, default_value = "elevation", value_parser = parse_layer)]
     layer: Layer,
 
     /// Where to write the PNG.
@@ -189,6 +189,7 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("terrain"), "{message}");
         assert!(message.contains("elevation-raw"), "{message}");
+        assert!(message.contains("relief"), "{message}");
     }
 
     #[test]
@@ -225,14 +226,14 @@ mod tests {
             "--hex-radius",
             "5",
             "--layer",
-            "elevation-raw",
+            "elevation",
             "--out",
             out.to_str().expect("a utf-8 path"),
         ])
         .expect("valid arguments");
 
         let message = run(&args).expect("rendering succeeds");
-        assert!(message.contains("elevation-raw"), "{message}");
+        assert!(message.contains("elevation"), "{message}");
 
         let bytes = std::fs::read(&out).expect("the file was written");
         let decoder = png::Decoder::new(std::io::Cursor::new(bytes));

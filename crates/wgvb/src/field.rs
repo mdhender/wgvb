@@ -200,21 +200,29 @@ pub(crate) fn normalize(total: f64, weight: f64) -> f64 {
     if weight > 0.0 { total / weight } else { 0.0 }
 }
 
-/// Builds the four multi-scale fields from a seed and configuration.
+/// Builds the multi-scale fields from a seed and configuration.
 ///
 /// This is the one place the field graph of `DESIGN.md` section 10 is written
 /// down. Every constant it uses comes from [`crate::Config`], so a world file
 /// records the whole of what produced it.
 ///
-/// Warping follows section 13: one low-frequency warp displaces the two
-/// geographic scales together — sharing it keeps continents and their uplift
-/// coherent rather than sliding past each other — and a weaker, higher-frequency
-/// warp breaks up local relief. The finest scale is left unwarped, because a
-/// warp shorter than its own wavelength only adds noise to noise.
+/// Warping follows section 13: one low-frequency warp displaces the three
+/// geographic scales together — sharing it keeps continents, their uplift, and
+/// the mountain belts on them coherent rather than sliding past each other —
+/// and a weaker, higher-frequency warp breaks up local relief. The finest scale
+/// is left unwarped, because a warp shorter than its own wavelength only adds
+/// noise to noise.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Fields {
     pub(crate) continentalness: Field,
     pub(crate) regional: Field,
+    /// The base field for ridge structure, before the directional averaging and
+    /// the ridged transform that `elevation.rs` applies to it.
+    ///
+    /// Warped with the same low-frequency warp as the two geographic scales, so
+    /// mountain belts bend with the continents they sit on rather than cutting
+    /// across them.
+    pub(crate) ridge: Field,
     pub(crate) local: Field,
     pub(crate) detail: Field,
 }
@@ -224,7 +232,7 @@ impl Fields {
     pub(crate) fn build(seed: crate::Seed, config: &crate::Config) -> Fields {
         use crate::hash::{
             DOM_CONTINENTALNESS, DOM_DETAIL_WARP_X, DOM_DETAIL_WARP_Y, DOM_REGIONAL_ELEVATION,
-            DOM_RELIEF, DOM_TERRAIN_DETAIL, DOM_WARP_X, DOM_WARP_Y,
+            DOM_RELIEF, DOM_RIDGE_STRUCTURE, DOM_TERRAIN_DETAIL, DOM_WARP_X, DOM_WARP_Y,
         };
 
         let fbm = |source: Field| Field::Fbm {
@@ -260,6 +268,10 @@ impl Fields {
             regional: warp(fbm(simplex(
                 DOM_REGIONAL_ELEVATION,
                 config.regional_wavelength_miles,
+            ))),
+            ridge: warp(fbm(simplex(
+                DOM_RIDGE_STRUCTURE,
+                config.ridge_wavelength_miles,
             ))),
             local: detail_warp(fbm(simplex(DOM_RELIEF, config.local_wavelength_miles))),
             detail: fbm(Field::Value {
@@ -604,12 +616,13 @@ mod tests {
     }
 
     #[test]
-    fn the_four_scales_are_independent_fields() {
+    fn every_scale_is_an_independent_field() {
         let fields = Fields::build(SEED, &Config::default());
         for (x, y) in positions() {
             let values = [
                 fields.continentalness.sample(x, y),
                 fields.regional.sample(x, y),
+                fields.ridge.sample(x, y),
                 fields.local.sample(x, y),
                 fields.detail.sample(x, y),
             ];
@@ -631,12 +644,13 @@ mod tests {
         // six miles.
         let fields = Fields::build(SEED, &Config::default());
         let step = 6.0;
-        let mut totals = [0.0_f64; 4];
+        let mut totals = [0.0_f64; 5];
         for k in 0..400_i32 {
             let x = f64::from(k) * step;
-            let named: [&Field; 4] = [
+            let named: [&Field; 5] = [
                 &fields.continentalness,
                 &fields.regional,
+                &fields.ridge,
                 &fields.local,
                 &fields.detail,
             ];
@@ -644,8 +658,12 @@ mod tests {
                 totals[index] += (field.sample(x, 0.0) - field.sample(x + step, 0.0)).abs();
             }
         }
-        assert!(totals[0] < totals[1], "{totals:?}");
-        assert!(totals[1] < totals[2], "{totals:?}");
-        assert!(totals[2] < totals[3], "{totals:?}");
+        for index in 1..totals.len() {
+            assert!(
+                totals[index - 1] < totals[index],
+                "scale {index} does not vary faster than scale {}: {totals:?}",
+                index - 1
+            );
+        }
     }
 }
