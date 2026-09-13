@@ -11,7 +11,9 @@ water. They cannot say the world looks like a world.
 
 Nothing in the build reads these files.
 
-All sheets use seed `0x0123_4567_89ab_cdef`.
+All sheets use seed `0x0123_4567_89ab_cdef`, except `terrain-feedface.png`,
+which uses `0xfeed_face`. See [the second seed](#the-second-seed) for why
+there are two.
 
 ## The wide sheets
 
@@ -98,6 +100,60 @@ Read the three panels in order and the rule order of section 17 is visible:
 ice beats the tundra the climate cover would have chosen, the elevated rules
 beat the cover where the ground is broken, and the cover fills in everything
 that is left.
+
+## The second seed
+
+`terrain-feedface.png` is the terrain layer of a *different world* — seed
+`0xfeed_face` — at the same four windows, the same size, and the same palette
+as `terrain.png`. The two sheets are meant to be read side by side.
+
+One seed cannot answer the phase's exit condition. A classifier tuned by hand
+until one world looked right would produce exactly the sheet above, and the
+only way to tell it from a classifier that works is to change the seed and
+change nothing else. This seed is one of the four in
+`crates/wgvb/tests/terrain.rs`, so it is also a world the measurements there
+already cover.
+
+```sh
+wgvb-map --seed 4276215982 --q 11000 --r -4500 \
+    --cols 1201 --rows 901 --hex-radius 1 --layer terrain --out terrain-2.png
+```
+
+The two worlds are the same kind of world and not the same world. Counted over
+all four windows of each, from the full-size renders rather than from the
+half-scale sheets, and ignoring the background gutter along the staggered edge
+— at a hex radius of one pixel every remaining pixel carries one tile's color,
+so these are tile shares:
+
+| | `0x0123_4567_89ab_cdef` | `0xfeed_face` |
+|---|---|---|
+| water, of the four windows | 74.2% | 71.2% |
+| glacial ice, of land | 3.8% | 0.7% |
+| tundra, of land | 7.7% | 11.9% |
+| hills, of land | 16.3% | 17.5% |
+| volcano, of land | 0.116% | 0.064% |
+| inland water, anywhere | none | none |
+
+What that says, and what the sheet shows:
+
+- **The ice moved, and it moved with the climate.** On `terrain.png` the ice
+  is almost all in the top-right panel, which is 3.4% ice; here that panel has
+  none at all and the white is in the two left-hand panels instead. Ice is
+  where the world is cold and high, not where the seed says.
+- **The vocabulary survives the change of world.** Every terrain this version
+  generates appears on both sheets, and neither is dominated by one: hills is
+  the largest share in both, at a sixth of the land.
+- **Volcanoes stay dots.** A different world, a different count, the same
+  order of magnitude — a fraction of a percent of land, in provinces of
+  volcanic highland, and still no two adjacent.
+- **Still no lakes.** The omission is a property of the classifier, not of one
+  seed's luck.
+
+The composition does differ, and that is the point rather than a defect: this
+world is less glaciated and less arid in these four windows — desert falls
+from 3.3% of land to 1.4% — with more tundra and more forest, because the same
+four windows fall on different climate. A generator whose terrain shares did
+*not* move between seeds would be reporting the palette rather than the world.
 
 ## Inland water is not here
 
