@@ -1619,10 +1619,11 @@ wgvb/
                 frame.rs        PlayerFrame; player-relative <-> canonical
         wgvb-map/               diagnostic and player-facing CLI
             src/main.rs
-        wgvb-serve/             local web viewer for one seed
+        wgvb-serve/             local web viewer for one world, or any seed
             src/
                 lib.rs          routes and the pure request-to-response function
                 view.rs         View; the URL is the whole state
+                source.rs       Source; a stored world, or the defaults
                 page.rs         the one HTML page
                 reply.rs        routing, rendering, and the error mapping
                 main.rs
@@ -1655,7 +1656,14 @@ wgvb-map    ->  wgvb-render  ->  wgvb
     +-> wgvb-store ----------->  wgvb
 
 wgvb-serve  ->  wgvb-render  ->  wgvb
+    |               |
+    +-> wgvb-store ----------->  wgvb
 ```
+
+`wgvb-serve` gained its `wgvb-store` edge with `--db`, which section 29.1 had
+planned for from the start. It points the same way as every other edge here:
+toward the core, never away from it, and the core still depends on exactly
+`serde` and `thiserror`.
 
 `wgvb-serve` is a separate crate rather than a mode of `wgvb-map`. A server
 drags in an HTTP stack, and possibly an async runtime, and the CLI has no use
@@ -1813,12 +1821,32 @@ The HTTP stack is `tiny_http` and a fixed worker pool rather than `axum` and
 `tokio`. The work is CPU-bound rendering with no IO to overlap, so an async
 runtime would buy nothing and cost about eighty crates against about five.
 
-Same standing as `wgvb-map`: the generator is constructed in memory from the
-seed in the route and the default configuration, so **output is diagnostic and
-does not represent a saved world**, and the page says so. When persistence
-lands, the server takes `--db`, the database supplies the seed, algorithm
-version, and effective configuration, and the seed in the route becomes a check
-against the stored one rather than the source of it.
+Same standing as `wgvb-map`, and the same two modes. Without `--db` the
+generator is constructed in memory from the seed in the route and the default
+configuration, so **output is diagnostic and does not represent a saved world**,
+and the page says so; every seed is servable, because the route is where the
+world comes from.
+
+With `--db` the database supplies the seed, the algorithm version, and the
+complete effective configuration, and **the seed in the route is a check against
+the stored one rather than the source of it** — another seed is a 404 naming the
+one this server holds. The page says that too, in the opposite words. Overlays
+are read fresh from the database on every request, so exploring a world and
+refreshing shows the exploration.
+
+`World` is `Send` and not `Sync`, so section 27.7's arrangement here is one
+connection per worker thread, opened **before the port is bound**: a database
+that fails an opening gate is a server that does not start rather than a server
+that answers every request with a 500. The server opens and never creates —
+`wgvb-map --db` creates a world, because creating one is a decision rather than
+a side effect of a typo.
+
+The `ETag` follows from all of this. The configuration fingerprint joins the
+algorithm version in every tag, because a configuration can now vary and two
+worlds behind one URL must not share a validator. A world-backed *image*
+carries no tag at all: it also depends on the overlays, which are mutable player
+state with no version anywhere in the system, and a tag that ignored them would
+go on serving an unexplored map after the player explored it.
 
 **The server and the CLI must agree byte for byte.** Two front ends over one
 renderer must not be allowed to drift, and that is one assertion rather than a

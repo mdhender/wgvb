@@ -165,8 +165,13 @@ These are the rules most likely to be violated by code that looks correct.
 - `wgvb-serve` is a front end, not a second renderer. Its window arithmetic is
   `Viewport::centered_on`; no offset-coordinate arithmetic lives in the server,
   and a test asserts that its PNG bytes are identical to `wgvb-map`'s for the
-  same window. Scroll steps are counted in tiles, never in pixels. See
-  `DESIGN.md` section 29.1.
+  same window — for a bare seed *and* for a stored world with overlays. Scroll
+  steps are counted in tiles, never in pixels. See `DESIGN.md` section 29.1.
+- With `--db`, the seed in the route is a **check** against the stored seed, not
+  the source of it. The server opens a world and never creates one. One
+  `World` per worker thread, opened before the port binds.
+- A world-backed image carries no `ETag`. Overlays are mutable player state with
+  no version, so a strong validator over one would be a lie.
 
 ## Public generated data
 
@@ -190,6 +195,8 @@ wgvb-map    ->  wgvb-render  ->  wgvb
     +-> wgvb-store ----------->  wgvb
 
 wgvb-serve  ->  wgvb-render  ->  wgvb
+    |               |
+    +-> wgvb-store ----------->  wgvb
 ```
 
 - `crates/wgvb` depends on exactly `serde` and `thiserror`. **Do not add a

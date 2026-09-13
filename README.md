@@ -184,6 +184,21 @@ cargo run --release -p wgvb-serve
 # then open http://127.0.0.1:8080/seed/0123456789abcdef
 ```
 
+Point it at a world and it serves that world instead:
+
+```sh
+cargo run --release -p wgvb-serve -- --db world.wgvb
+```
+
+The database then supplies the seed, the algorithm version, and the complete
+effective configuration, and **the seed in the route becomes a check against the
+stored one** rather than the source of it — asking for another seed is a 404
+naming the one the server holds. Player overlays are read fresh on every
+request, so exploring with `wgvb-map --discover` and refreshing the page shows
+the exploration. The server opens a world and never creates one; creating is
+`wgvb-map --db`'s job, because creating a world is a decision rather than a
+side effect of a typo.
+
 The seed is sixteen hexadecimal digits in the route, the view center is in the
 query string, and six links move the view by whole hexes — `rows / 2` north and
 south, `cols / 2` on the four diagonals, so a step means the same thing at every
@@ -197,10 +212,11 @@ terrain, the elevation band, the two climate bands, and the scalars they were
 classified from — so a link to a window says what is in it rather than leaving
 a reader to count swatches.
 
-It binds loopback by default, clamps the window before rendering it, and its
-output is diagnostic in exactly the sense `wgvb-map`'s is — an in-memory
-generator from the seed in the route, not a saved world. See `DESIGN.md`
-section 29.1.
+It binds loopback by default and clamps the window before rendering it. Without
+`--db` its output is diagnostic in exactly the sense `wgvb-map`'s is — an
+in-memory generator from the seed in the route, not a saved world — and the page
+says which of the two it is rather than always claiming the first. See
+`DESIGN.md` section 29.1.
 
 Continuous fields are not yet periodic across the wrapped edges. That is an
 accepted world-warp seam under section 7.1, documented and measured in

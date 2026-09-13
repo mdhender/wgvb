@@ -7,10 +7,12 @@
 //! connection.
 
 use wgvb::{ALGORITHM_VERSION, Generator};
-use wgvb_render::{RENDER_VERSION, encode_png, render};
+use wgvb_render::{Overlays, RENDER_VERSION, Viewport, encode_png, render_player};
+use wgvb_store::{Bounds, World};
 
 use crate::PAGE_VERSION;
 use crate::page::page;
+use crate::source::Source;
 use crate::view::{RequestError, Route, View};
 
 /// `text/html`, as this server writes it.
@@ -48,20 +50,32 @@ impl Reply {
     }
 }
 
-/// Answers one request target.
+/// Answers one request target against the program defaults.
 ///
-/// The generator is constructed here, per request, from the seed in the route
-/// and the default configuration. That is cheap — it builds a field graph, not
-/// a world — and it is what keeps this server stateless in the same sense the
-/// generator is: nothing is remembered between requests, so nothing between
-/// requests can affect what is drawn.
+/// The convenience form, and what a server started without `--db` does for
+/// every request. Output is diagnostic: the generator is built in memory from
+/// the seed in the route, so it does not represent a saved world.
 ///
-/// **Output is diagnostic and does not represent a saved world.** When
-/// persistence arrives this function takes the generator from the database
-/// instead, and the seed in the route becomes a check against the stored one
-/// rather than the source of it.
+/// # Panics
+///
+/// Panics if the default configuration cannot be canonically encoded, which
+/// would mean this binary shipped a configuration it cannot fingerprint.
 #[must_use]
 pub fn reply(target: &str) -> Reply {
+    let source = Source::open(None).expect("the default configuration fingerprints");
+    reply_from(target, &source)
+}
+
+/// Answers one request target.
+///
+/// Still a pure function of the target and the source: nothing is remembered
+/// between requests, so nothing between requests can affect what is drawn. What
+/// the source adds is *which world* — and, when that is a stored one, what the
+/// player has seen and built, which is read fresh from the database on every
+/// request because it is the one thing here that can change while the server
+/// runs.
+#[must_use]
+pub fn reply_from(target: &str, source: &Source) -> Reply {
     // The one redirect: a bare root is not a state of the viewer, so it is sent
     // to one that is rather than being given a page of its own to keep in step.
     if target == "/" || target.is_empty() {
@@ -76,7 +90,7 @@ pub fn reply(target: &str) -> Reply {
     }
 
     match View::parse(target) {
-        Ok((route, view)) => match draw(route, &view) {
+        Ok((route, view)) => match draw(route, &view, source) {
             Ok(reply) => reply,
             Err(error) => refuse(&error),
         },
@@ -85,32 +99,106 @@ pub fn reply(target: &str) -> Reply {
 }
 
 /// Renders whichever of the two routes was asked for.
-fn draw(route: Route, view: &View) -> Result<Reply, RequestError> {
+///
+/// The two arms differ in exactly one thing that matters: where the generator
+/// comes from. A server without a database serves *any* seed, because the seed
+/// in the route is the source of the world; a server with one serves exactly
+/// the world it holds, because the seed in the route is a check against it.
+fn draw(route: Route, view: &View, source: &Source) -> Result<Reply, RequestError> {
     let viewport = view.viewport()?;
-    let generator = Generator::with_defaults(view.seed);
+    match source {
+        Source::Defaults { .. } => {
+            // One generator per request, built before the route is chosen: the
+            // page reads the center tile and the image reads the whole window,
+            // and two generators would be two chances to disagree about the
+            // configuration behind one URL.
+            let generator = Generator::with_defaults(view.seed);
+            compose(
+                route,
+                view,
+                &viewport,
+                &generator,
+                &Overlays::none(),
+                source,
+            )
+        }
+        Source::Stored { world, generator } => {
+            // The check section 29.1 asked for. Serving the stored world under
+            // somebody else's seed in the address bar would be a link that
+            // means one thing to the person who pasted it and another to the
+            // person who opens it.
+            if view.seed != world.seed() {
+                return Err(RequestError::OtherWorld {
+                    asked: view.seed,
+                    stored: world.seed(),
+                });
+            }
+            let overlays = overlays_in(world, &viewport)?;
+            compose(route, view, &viewport, generator, &overlays, source)
+        }
+    }
+}
+
+/// Draws the page or the image, once the world behind them is settled.
+fn compose(
+    route: Route,
+    view: &View,
+    viewport: &Viewport,
+    generator: &Generator,
+    overlays: &Overlays,
+    source: &Source,
+) -> Result<Reply, RequestError> {
     match route {
         Route::Page => Ok(Reply {
             status: 200,
             content_type: HTML,
-            // One generator per request, built before the route is chosen:
-            // the page now reads the center tile and the image reads the
-            // whole window, and two generators would be two chances to
-            // disagree about the configuration behind one URL.
-            body: page(view, &viewport, &generator).into_bytes(),
-            etag: Some(etag(view, "page", PAGE_VERSION)),
+            body: page(view, viewport, generator, overlays, source).into_bytes(),
+            etag: Some(etag(view, "page", PAGE_VERSION, source)),
             location: None,
         }),
         Route::Image => {
-            let image = render(&generator, &viewport, view.layer);
+            let image = render_player(generator, viewport, view.layer, overlays);
             Ok(Reply {
                 status: 200,
                 content_type: PNG,
                 body: encode_png(&image)?,
-                etag: Some(etag(view, "png", RENDER_VERSION)),
+                // No tag for a world-backed image, and that is the honest
+                // answer rather than an omission. A strong `ETag` promises the
+                // bytes are a pure function of everything it names, and a
+                // player image also depends on the overlays — mutable state
+                // with no version anywhere in the system. A tag that ignored
+                // them would go on serving an unexplored map after the player
+                // explored it, which is precisely the failure a strong
+                // validator exists to prevent. See `DESIGN.md` section 29.2.
+                etag: match source {
+                    Source::Defaults { .. } => Some(etag(view, "png", RENDER_VERSION, source)),
+                    Source::Stored { .. } => None,
+                },
                 location: None,
             })
         }
     }
+}
+
+/// Every overlay that could fall inside a window, in coordinate order.
+///
+/// One range scan over the smallest `(q, r)` box holding the window's tiles.
+/// A superset is correct — an overlay outside the window is never drawn — and a
+/// wrapped window has no box smaller than this one. Identical to what
+/// `wgvb-map` does, through the same [`Viewport::coords`] and the same
+/// [`Bounds`], because two front ends over one renderer must not drift.
+fn overlays_in(world: &World, viewport: &Viewport) -> Result<Overlays, RequestError> {
+    let bounds = Bounds::containing(viewport.coords()).unwrap_or_else(Bounds::everywhere);
+    let discovered = world
+        .discoveries_in(&bounds)
+        .map_err(|error| RequestError::World(error.to_string()))?;
+    let settlements = world
+        .settlements_in(&bounds)
+        .map_err(|error| RequestError::World(error.to_string()))?
+        .into_iter()
+        .map(|settlement| (settlement.coord, settlement.name))
+        .collect();
+    Ok(Overlays::new(discovered, settlements))
 }
 
 /// Answers a refusal as plain text.
@@ -147,14 +235,16 @@ fn refuse(error: &RequestError) -> Reply {
 /// The hex radius enters by `to_bits`, so two radii that print the same but are
 /// not the same value cannot share a tag.
 ///
-/// **This is incomplete until the configuration fingerprint of section 21.2
-/// exists.** Every generator here is built by `Generator::with_defaults`, so
-/// the effective configuration is currently a constant and the tag is sound;
-/// the moment a configuration can vary — a `--db` flag, a config file — the
-/// fingerprint has to join this list or the tag starts lying.
-fn etag(view: &View, kind: &str, revision: u32) -> String {
+/// The configuration fingerprint is the fourth input, and it closes the hole
+/// this function used to carry a warning about. A configuration can now vary —
+/// `--db` is exactly that — so without it a page drawn from a stored world and
+/// a page drawn from the defaults would share a tag while showing different
+/// worlds. Four bytes of it, which is enough to tell two configurations apart
+/// and short enough to keep the tag readable.
+fn etag(view: &View, kind: &str, revision: u32, source: &Source) -> String {
     format!(
-        "\"{kind}{revision}.a{ALGORITHM_VERSION}.s{:016x}.q{}.r{}.{}x{}.h{:08x}.{}\"",
+        "\"{kind}{revision}.a{ALGORITHM_VERSION}.c{}.s{:016x}.q{}.r{}.{}x{}.h{:08x}.{}\"",
+        source.fingerprint_prefix(),
         view.seed,
         view.center.q(),
         view.center.r(),

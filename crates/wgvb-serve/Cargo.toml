@@ -22,6 +22,14 @@ wgvb-render.workspace = true
 clap.workspace = true
 thiserror.workspace = true
 
+# `wgvb-store` arrived with `--db`. DESIGN.md section 29.1 always said the
+# server would take a database once persistence existed — the database supplies
+# the seed, algorithm version, and effective configuration, and the seed in the
+# route becomes a check against the stored one — so this edge was planned, and
+# section 28's graph now draws it. It points the same direction as every other
+# edge in the workspace: toward the core, never away from it.
+wgvb-store.workspace = true
+
 # `tiny_http` rather than `axum` and `tokio`. The work this server does is
 # CPU-bound rendering with no IO to overlap, so an async runtime would buy
 # nothing and cost about eighty crates; a blocking server and a fixed worker

@@ -660,6 +660,20 @@ impl Viewport {
         (col < self.cols && row < self.rows).then_some((col, row))
     }
 
+    /// Every tile this viewport draws, in traversal order.
+    ///
+    /// An iterator rather than a `Vec`: both callers fold it into a bounding
+    /// box for an overlay range scan, and a two-hundred-by-two-hundred window
+    /// is forty thousand coordinates to allocate for a running minimum and
+    /// maximum. It lives here rather than in each front end because there were
+    /// about to be two copies of the same nested loop, and a window walk that
+    /// disagreed between the CLI and the server would be a class of bug worth
+    /// making impossible.
+    pub fn coords(&self) -> impl Iterator<Item = Coord> + '_ {
+        let (cols, rows) = self.tile_counts();
+        (0..cols).flat_map(move |col| (0..rows).map(move |row| self.coord_at(col, row)))
+    }
+
     /// Which tile a pixel belongs to, if any.
     #[must_use]
     pub fn locate(&self, x: u32, y: u32) -> Option<Coord> {

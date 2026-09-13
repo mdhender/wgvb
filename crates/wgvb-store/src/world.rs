@@ -3,6 +3,7 @@
 //! See `DESIGN.md` sections 27 and 27.5.
 
 use std::path::Path;
+use std::time::Duration;
 
 use rusqlite::{Connection, OpenFlags};
 use wgvb::{ALGORITHM_VERSION, Config, Generator, Seed};
@@ -226,6 +227,9 @@ impl World {
     }
 }
 
+/// How long a connection waits for a locked database before giving up.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Opens a connection and sets the per-connection pragmas.
 fn connect(path: &Path, flags: OpenFlags) -> Result<Connection, rusqlite::Error> {
     let connection = Connection::open_with_flags(path, flags)?;
@@ -234,6 +238,14 @@ fn connect(path: &Path, flags: OpenFlags) -> Result<Connection, rusqlite::Error>
     // *authoritative* tables has to actually be enforced, and SQLite leaves
     // this off per connection by default.
     connection.pragma_update(None, "foreign_keys", "ON")?;
+    // One world is routinely open in more than one process at once: the viewer
+    // holds a read connection per worker while `wgvb-map --db --discover`
+    // writes to the same file, which is the whole point of overlays being read
+    // fresh on every request. SQLite's default is to give up on a locked
+    // database immediately, which would turn an ordinary overlapping write into
+    // a failed page load. Five seconds is far longer than any write here takes
+    // and far shorter than a person's patience.
+    connection.busy_timeout(BUSY_TIMEOUT)?;
     Ok(connection)
 }
 

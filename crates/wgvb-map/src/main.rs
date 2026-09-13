@@ -181,7 +181,7 @@ fn from_world(
     // One range scan over the smallest box holding the window's tiles. A
     // superset is correct — an overlay outside the window is never drawn — and
     // a wrapped window has no box smaller than this one.
-    let bounds = Bounds::containing(window_coords(viewport)).unwrap_or_else(Bounds::everywhere);
+    let bounds = Bounds::containing(viewport.coords()).unwrap_or_else(Bounds::everywhere);
     let overlays = Overlays::new(
         world.discoveries_in(&bounds)?,
         world
@@ -217,16 +217,6 @@ fn apply_overlay_writes(args: &Args, world: &World) -> Result<(), Box<dyn std::e
         world.settle(coord, name)?;
     }
     Ok(())
-}
-
-/// Every tile the viewport will draw.
-///
-/// An iterator rather than a `Vec`: the only caller folds it into a bounding
-/// box, and a four-hundred-by-three-hundred window is a hundred and twenty
-/// thousand coordinates to allocate for a running minimum and maximum.
-fn window_coords(viewport: &Viewport) -> impl Iterator<Item = Coord> + '_ {
-    let (cols, rows) = viewport.tile_counts();
-    (0..cols).flat_map(move |col| (0..rows).map(move |row| viewport.coord_at(col, row)))
 }
 
 /// Every tile within `radius` of a center, including the center.

@@ -214,3 +214,33 @@ fn an_overlay_is_keyed_by_the_canonical_tile() {
         "one tile was stored twice"
     );
 }
+
+#[test]
+fn two_connections_to_one_world_can_read_and_write_at_the_same_time() {
+    // The viewer holds a read connection per worker while `wgvb-map --db
+    // --discover` writes to the same file. SQLite's default is to give up on a
+    // locked database immediately, which would turn an ordinary overlapping
+    // write into a failed page load, so every connection sets a busy timeout.
+    let scratch = Scratch::new("concurrent");
+    let path = scratch.file("world.wgvb");
+    let writer = World::open_or_create(&path, 1, &Config::default()).expect("a fresh world");
+    let reader = World::open(&path).expect("a second connection");
+
+    writer
+        .discover(&[Coord::new(2, 3)])
+        .expect("the write runs while another connection is open");
+    assert_eq!(
+        reader.discoveries().expect("the read runs"),
+        vec![Coord::new(2, 3)],
+        "the second connection did not see the write"
+    );
+
+    writer
+        .settle(Coord::new(2, 3), "Ashford")
+        .expect("the write runs");
+    assert_eq!(
+        reader.settlements().expect("the read runs").len(),
+        1,
+        "the second connection did not see the settlement"
+    );
+}

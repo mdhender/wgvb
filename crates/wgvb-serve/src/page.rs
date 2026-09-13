@@ -9,9 +9,11 @@ use std::fmt::Write as _;
 
 use wgvb::{ALGORITHM_VERSION, Climate, Coord, Generator, HeatBand, MoistureBand, Terrain};
 use wgvb_render::{
-    Key, Layer, RENDER_VERSION, Scale, Viewport, climate_color, color, terrain_color,
+    FOG, Key, Layer, Overlays, RENDER_VERSION, SETTLEMENT, Scale, Viewport, climate_color, color,
+    terrain_color,
 };
 
+use crate::source::Source;
 use crate::view::{COMPASS, Compass, MAX_HEX_RADIUS, MIN_HEX_RADIUS, View};
 
 /// Renders the viewer page for one view.
@@ -25,11 +27,21 @@ use crate::view::{COMPASS, Compass, MAX_HEX_RADIUS, MIN_HEX_RADIUS, View};
 /// escaping in it; refusals are answered as `text/plain` instead, where a
 /// quoted-back URL is inert.
 ///
-/// `generator` is the caller's, because the image route already builds one and
-/// two generators for one request would be two chances to disagree about the
-/// configuration.
+/// `generator` and `overlays` are the caller's, because the image route already
+/// has both and a second copy of either would be a second chance to disagree
+/// about what one URL shows.
+///
+/// A settlement name is the one piece of text on this page that a *person*
+/// wrote rather than a parser produced, so it is the one piece that is escaped.
+/// See [`escape`].
 #[must_use]
-pub fn page(view: &View, viewport: &Viewport, generator: &Generator) -> String {
+pub fn page(
+    view: &View,
+    viewport: &Viewport,
+    generator: &Generator,
+    overlays: &Overlays,
+    source: &Source,
+) -> String {
     let (width, height) = viewport.image_size();
     let tiles = u64::from(view.cols) * u64::from(view.rows);
 
@@ -69,6 +81,7 @@ pub fn page(view: &View, viewport: &Viewport, generator: &Generator) -> String {
         "<dt>center</dt><dd><code>{view}</code> canonical <code>(q, r, s)</code></dd>"
     );
     html.push_str(&tile_readout(generator, view.center));
+    html.push_str(&overlay_readout(overlays, view.center));
     let _ = writeln!(
         html,
         "<dt>window</dt><dd>{} x {} tiles, {tiles} in all, at hex radius {} px \
@@ -77,19 +90,13 @@ pub fn page(view: &View, viewport: &Viewport, generator: &Generator) -> String {
     );
     let _ = writeln!(
         html,
-        "<dt>versions</dt><dd>algorithm {ALGORITHM_VERSION}, render {RENDER_VERSION}</dd>"
+        "<dt>versions</dt><dd>algorithm {ALGORITHM_VERSION}, render {RENDER_VERSION}, \
+         config <code>{}</code></dd>",
+        source.fingerprint_prefix()
     );
     html.push_str("</dl>\n");
 
-    let _ = writeln!(
-        html,
-        "<p class=\"notice\"><strong>This is not a saved world.</strong> \
-         The generator is built in memory from the seed in the route and the \
-         default configuration, so this output is diagnostic and does not \
-         represent a saved world. A world file opened later will not reproduce \
-         these images unless it happens to carry the same seed and \
-         configuration.</p>"
-    );
+    html.push_str(&provenance(source));
 
     let _ = writeln!(
         html,
@@ -269,6 +276,141 @@ fn climate_key() -> String {
     html
 }
 
+/// Says where this world came from, and refuses to be vague about it.
+///
+/// Two sentences that mean opposite things, and the page must never print the
+/// wrong one. A diagnostic render that claimed to be a saved world would send
+/// somebody looking for a file that does not exist; a saved world that claimed
+/// to be diagnostic would make somebody re-derive what the database already
+/// knows.
+fn provenance(source: &Source) -> String {
+    let mut html = String::new();
+    match source.world() {
+        None => {
+            let _ = writeln!(
+                html,
+                "<p class=\"notice\"><strong>This is not a saved world.</strong> \
+                 The generator is built in memory from the seed in the route and the \
+                 default configuration, so this output is diagnostic and does not \
+                 represent a saved world. A world file opened later will not reproduce \
+                 these images unless it happens to carry the same seed and \
+                 configuration. Start the server with <code>--db</code> to serve one \
+                 that is saved.</p>"
+            );
+        }
+        Some(world) => {
+            let _ = writeln!(
+                html,
+                "<p class=\"notice saved\"><strong>This is a saved world.</strong> \
+                 The seed, the algorithm version, and the complete effective \
+                 configuration came from the database, not from this binary's \
+                 defaults, and the seed in the address bar is checked against the \
+                 stored one rather than being the source of it. Stored: seed \
+                 <code>{:016x}</code>, algorithm version {}, configuration \
+                 <code>{}</code>.</p>",
+                world.seed(),
+                world.algorithm_version(),
+                source.fingerprint_prefix(),
+            );
+        }
+    }
+    html
+}
+
+/// What the player knows about the tile in the middle, and about the window.
+///
+/// Only printed when there is something to say. A server with no database has
+/// no overlays and no opinion about them, and three empty rows saying so would
+/// be noise on every diagnostic page.
+///
+/// The fog row leads with the rule that is easiest to misread: an empty
+/// discovery set means fog is *off*, not that nothing has been seen, so a page
+/// that simply said "not discovered" for every tile of an unexplored world
+/// would be describing something the image does not show.
+fn overlay_readout(overlays: &Overlays, center: Coord) -> String {
+    if overlays.is_empty() {
+        return String::new();
+    }
+
+    let mut html = String::new();
+    let _ = writeln!(
+        html,
+        "<dt>fog</dt><dd>{}{}</dd>",
+        swatch(FOG),
+        if overlays.fog_of_war() {
+            if overlays.is_discovered(center) {
+                "on; this tile has been seen".to_string()
+            } else {
+                "on; this tile has <strong>not</strong> been seen".to_string()
+            }
+        } else {
+            "off; no discoveries are recorded, so nothing is hidden".to_string()
+        },
+    );
+
+    let _ = writeln!(
+        html,
+        "<dt>overlays</dt><dd>{} discovered {}, {} settlement{} in this window</dd>",
+        overlays.discovered().len(),
+        if overlays.discovered().len() == 1 {
+            "tile"
+        } else {
+            "tiles"
+        },
+        overlays.settlements().len(),
+        if overlays.settlements().len() == 1 {
+            ""
+        } else {
+            "s"
+        },
+    );
+
+    if let Some(name) = overlays.settlement_at(center) {
+        let _ = writeln!(
+            html,
+            "<dt>settlement</dt><dd>{}<strong>{}</strong></dd>",
+            swatch(SETTLEMENT),
+            escape(name),
+        );
+    }
+    html
+}
+
+/// One inline color chip, for a readout row that names a color on the map.
+fn swatch(rgba: [u8; 4]) -> String {
+    format!(
+        "<i style=\"background:#{:02x}{:02x}{:02x}\"></i>",
+        rgba[0], rgba[1], rgba[2]
+    )
+}
+
+/// Escapes text somebody typed.
+///
+/// The rest of this page needs no escaping, and the module documentation says
+/// why: every other interpolated value is a number, a coordinate component, or
+/// a `&'static str` from the core crate. A settlement name is none of those —
+/// it is a string a player wrote and the database stored verbatim — so it is
+/// the one value here that could carry markup, and the one that is escaped.
+///
+/// Five characters, which is the set that matters inside element content and
+/// inside a double-quoted attribute. Nothing on this page puts a name in an
+/// unquoted attribute or in a script or style context, where this would not be
+/// enough.
+fn escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for character in text.chars() {
+        match character {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(character),
+        }
+    }
+    out
+}
+
 /// What the generator says about the tile in the center cell.
 ///
 /// The page names the center coordinate and, until terrain existed, said
@@ -384,6 +526,8 @@ h1 code { color: var(--ink); }
 .readout { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 16px 0; }
 .readout dt { color: var(--quiet); }
 .readout dd { margin: 0; }
+.readout dd i { display: inline-block; width: 1.6em; height: 1em; border: 1px solid var(--edge); vertical-align: -1px; margin-right: 6px; }
 .notice { max-width: 62ch; color: var(--quiet); border-left: 2px solid var(--edge); padding-left: 10px; }
+.notice.saved { border-left-color: currentColor; color: var(--ink); }
 </style>
 "#;

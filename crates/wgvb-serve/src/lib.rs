@@ -39,35 +39,57 @@
 //! **The default bind address is `127.0.0.1`.** This is a diagnostic tool with
 //! no authentication and an endpoint whose cost the caller chooses.
 //!
-//! # This is not a saved world
+//! # One world, or any seed
 //!
-//! The generator is built in memory from the seed in the route and the default
-//! configuration, so output is diagnostic and does not represent a saved world.
-//! The page says so. When persistence lands this server takes a database, the
-//! database supplies the seed, algorithm version, and effective configuration,
-//! and the seed in the route becomes a check against the stored one rather than
-//! the source of it.
+//! Without `--db` the generator is built in memory from the seed in the route
+//! and the default configuration, so output is diagnostic and does not
+//! represent a saved world; the page says so, and every seed is servable
+//! because the route is where the world comes from.
+//!
+//! With `--db` the database supplies the seed, the algorithm version, and the
+//! complete effective configuration, and **the seed in the route becomes a
+//! check against the stored one rather than the source of it** — a request for
+//! another seed is a 404 naming the one this server holds. Player overlays are
+//! read fresh from the database on every request and composed at render time,
+//! so exploring a world and refreshing the page shows the exploration.
+//!
+//! The `ETag` follows from that. A page or a diagnostic image is a pure
+//! function of its URL and carries a strong validator naming the algorithm
+//! version, the configuration fingerprint, and the render or page revision. A
+//! world-backed *image* carries none, because it also depends on overlays,
+//! which are mutable player state with no version anywhere in the system. See
+//! `DESIGN.md` section 29.2.
 
 mod page;
 mod reply;
+mod source;
 mod view;
 
 use std::io;
 use std::net::{IpAddr, ToSocketAddrs};
+use std::path::PathBuf;
 use std::thread;
 
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
 pub use page::page;
-pub use reply::{HTML, PNG, Reply, TEXT, reply};
+pub use reply::{HTML, PNG, Reply, TEXT, reply, reply_from};
+pub use source::Source;
 pub use view::{
     Axis, COMPASS, Compass, DEFAULT_COLS, DEFAULT_HEX_RADIUS, DEFAULT_ROWS, MAX_COLS,
     MAX_HEX_RADIUS, MAX_ROWS, MIN_HEX_RADIUS, RequestError, Route, View,
 };
 
-/// How the server was asked to listen.
+/// How the server was asked to listen, and what it was asked to show.
 #[derive(Debug, Clone)]
 pub struct Options {
+    /// The world to serve, or `None` to serve any seed from the program
+    /// defaults.
+    ///
+    /// Opening only, never creating. `wgvb-map --db` creates a world because
+    /// creating one is a decision; a viewer that created a world by being
+    /// pointed at a typo would be a viewer that writes files nobody asked for.
+    pub database: Option<PathBuf>,
     /// Interface to bind. Loopback by default, and deliberately so.
     pub host: String,
     /// Port to bind.
@@ -82,6 +104,7 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Options {
         Options {
+            database: None,
             host: DEFAULT_HOST.to_string(),
             port: DEFAULT_PORT,
             workers: default_workers(),
@@ -114,7 +137,11 @@ pub const DEFAULT_PORT: u16 = 8080;
 /// - **1** — the viewer as phase 5 shipped it.
 /// - **2** — the center-tile readout. The page now says what is *at* the
 ///   coordinate it centers on rather than only naming the coordinate.
-pub const PAGE_VERSION: u32 = 2;
+/// - **3** — persistence. The provenance notice now says which of two opposite
+///   things is true rather than always saying the diagnostic one, the readout
+///   names the configuration fingerprint, and a world-backed page gains the
+///   fog and overlay rows.
+pub const PAGE_VERSION: u32 = 3;
 
 /// Workers to run when the caller does not say: one per available core.
 #[must_use]
@@ -134,6 +161,14 @@ pub enum ServeError {
         address: String,
         source: Box<dyn std::error::Error + Send + Sync>,
     },
+    /// The database refused one of the opening gates of `DESIGN.md`
+    /// section 27.5.
+    ///
+    /// Raised before the port is bound, deliberately. A world this binary
+    /// cannot reproduce is a server that should not start, not a server that
+    /// answers every request with a 500.
+    #[error("cannot open the world: {0}")]
+    World(#[from] wgvb_store::OpenError),
 }
 
 /// Listens, and serves until the process is stopped.
@@ -164,37 +199,68 @@ pub fn serve(options: &Options) -> Result<(), ServeError> {
         );
     }
 
+    // Before the bind, and one per worker: `World` is `Send` and not `Sync`,
+    // so section 27.7's "one connection per thread" is the arrangement, and a
+    // database that fails a gate must fail the startup rather than every
+    // request.
+    let workers = options.workers.max(1);
+    let mut sources = Source::open_all(options.database.as_deref(), workers)?;
+
     let server = Server::http(resolved).map_err(|source| ServeError::Bind {
         address: address.clone(),
         source,
     })?;
-
-    let workers = options.workers.max(1);
     println!(
         "wgvb-serve: listening on http://{resolved}/ with {workers} worker{}",
         if workers == 1 { "" } else { "s" }
     );
+    // The seed a visitor should actually open. A server holding a world serves
+    // exactly one, so offering a link to seed zero would be offering a link to
+    // a 404.
+    let home = sources
+        .first()
+        .and_then(Source::world)
+        .map_or(0, wgvb_store::World::seed);
+    if let Some(world) = sources.first().and_then(Source::world) {
+        println!(
+            "wgvb-serve: serving the world in {} (seed {:016x}, algorithm {})",
+            options.database.as_ref().map_or_else(
+                || "a database".to_string(),
+                |path| path.display().to_string()
+            ),
+            world.seed(),
+            world.algorithm_version(),
+        );
+    } else {
+        println!("wgvb-serve: no --db, so output is diagnostic and any seed is servable");
+    }
     println!(
         "wgvb-serve: try http://{resolved}{}",
-        View::origin_of(0).page_url()
+        View::origin_of(home).page_url()
     );
 
+    // One source moves into each worker. `Source` is `Send`, which is what
+    // makes this legal and what section 27.7 promised.
+    let mine = sources.pop().expect("at least one worker has a source");
+    let server = &server;
     thread::scope(|scope| {
-        for _ in 1..workers {
-            scope.spawn(|| work(&server, options.log));
+        for source in sources {
+            // `move` takes the source, which each worker owns, and the shared
+            // reference to the server, which they do not.
+            scope.spawn(move || work(server, &source, options.log));
         }
-        work(&server, options.log);
+        work(server, &mine, options.log);
     });
 
     Ok(())
 }
 
 /// One worker's whole life: take a request, answer it, take the next.
-fn work(server: &Server, log: bool) {
+fn work(server: &Server, source: &Source, log: bool) {
     while let Ok(request) = server.recv() {
         let target = request.url().to_string();
         let method = request.method().clone();
-        match answer(request) {
+        match answer(request, source) {
             Ok(status) if log => println!("wgvb-serve: {method} {target} {status}"),
             Ok(_) => {}
             Err(error) => eprintln!("wgvb-serve: {method} {target} failed: {error}"),
@@ -203,7 +269,7 @@ fn work(server: &Server, log: bool) {
 }
 
 /// Answers one request, returning the status it sent.
-fn answer(request: Request) -> io::Result<u16> {
+fn answer(request: Request, source: &Source) -> io::Result<u16> {
     let method = request.method().clone();
     if method != Method::Get && method != Method::Head {
         let status = 405;
@@ -216,7 +282,7 @@ fn answer(request: Request) -> io::Result<u16> {
         return Ok(status);
     }
 
-    let reply = reply(request.url());
+    let reply = reply_from(request.url(), source);
 
     // A strong `ETag` is only worth a header if something revalidates against
     // it. `tiny_http` sends no body for a HEAD, so one code path serves both.

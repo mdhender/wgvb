@@ -182,18 +182,36 @@ pub enum RequestError {
     UnknownParameter { name: String, known: String },
     #[error("the window cannot be drawn: {0}")]
     Unrenderable(#[from] RenderError),
+    #[error(
+        "this server holds the world with seed {stored:016x}, not {asked:016x}; \
+         try /seed/{stored:016x}"
+    )]
+    OtherWorld { asked: Seed, stored: Seed },
+    #[error("the world database could not be read: {0}")]
+    World(String),
 }
 
 impl RequestError {
     /// The HTTP status this refusal answers with.
     ///
-    /// Everything here is the caller's fault, so nothing here is a 500. A
-    /// window too large for [`wgvb_render::MAX_IMAGE_PIXELS`] included: the
-    /// caller chose the size.
+    /// Almost everything here is the caller's fault, so almost nothing here is
+    /// a 500. A window too large for [`wgvb_render::MAX_IMAGE_PIXELS`]
+    /// included: the caller chose the size.
+    ///
+    /// Two exceptions, and each is its own kind:
+    ///
+    /// - [`RequestError::OtherWorld`] is a 404. A server holding one world does
+    ///   not have the seed that was asked for, and "not found" is what that is;
+    ///   the message names the seed it does have, so the fix is a link away.
+    /// - [`RequestError::World`] is a 500, and it is the only one. A database
+    ///   that stops answering is the server's problem, not the caller's, and
+    ///   reporting it as a 400 would send somebody looking at their URL for a
+    ///   mistake that is not in it.
     #[must_use]
     pub const fn status(&self) -> u16 {
         match self {
-            RequestError::NoRoute { .. } => 404,
+            RequestError::NoRoute { .. } | RequestError::OtherWorld { .. } => 404,
+            RequestError::World(_) => 500,
             _ => 400,
         }
     }

@@ -7,6 +7,7 @@
 //! CLI has no use for one; keeping them apart keeps `wgvb-map --help` honest
 //! and keeps the diagnostic CLI buildable without a web server in the tree.
 
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
@@ -16,6 +17,14 @@ use wgvb_serve::{DEFAULT_HOST, DEFAULT_PORT, Options, default_workers, is_loopba
 #[derive(Debug, Parser)]
 #[command(version, about, long_about = None)]
 struct Args {
+    /// World database to serve. Without one, any seed is served from the
+    /// program defaults and output is diagnostic.
+    ///
+    /// Opened, never created: `wgvb-map --db` is what creates a world, because
+    /// creating one is a decision rather than a side effect of a typo.
+    #[arg(long)]
+    db: Option<PathBuf>,
+
     /// Interface to bind.
     ///
     /// The default is loopback on purpose: this viewer has no authentication
@@ -48,6 +57,7 @@ fn main() -> ExitCode {
     }
 
     let options = Options {
+        database: args.db,
         host: args.host,
         port: args.port,
         workers: if args.workers == 0 {
@@ -85,12 +95,15 @@ mod tests {
         assert_eq!(args.port, DEFAULT_PORT);
         assert_eq!(args.workers, 0, "zero means one worker per core");
         assert!(!args.quiet);
+        assert_eq!(args.db, None, "a viewer with no world serves any seed");
     }
 
     #[test]
     fn the_documented_flags_all_parse() {
         let args = Args::try_parse_from([
             "wgvb-serve",
+            "--db",
+            "world.wgvb",
             "--host",
             "0.0.0.0",
             "--port",
@@ -100,6 +113,7 @@ mod tests {
             "--quiet",
         ])
         .expect("the documented command line parses");
+        assert_eq!(args.db, Some(PathBuf::from("world.wgvb")));
         assert_eq!(args.host, "0.0.0.0");
         assert_eq!(args.port, 9000);
         assert_eq!(args.workers, 2);
