@@ -43,7 +43,7 @@ mod palette;
 use hexx::{Hex, HexLayout, HexOrientation, OffsetHexMode, Vec2};
 use wgvb::{Component, Coord, Generator, Sample};
 
-pub use palette::{BACKGROUND, color};
+pub use palette::{BACKGROUND, climate_color, color};
 
 /// Palette and symbol-rule version. Cached or golden-compared rendered output
 /// is invalid across a change to this value.
@@ -94,19 +94,24 @@ pub fn to_hex(q: Component, r: Component) -> Hex {
     Hex::new(i32::from(q), i32::from(r))
 }
 
-/// A diagnostic scalar layer.
+/// A diagnostic layer.
 ///
-/// Only the fields that exist at this phase appear here. Temperature, moisture,
-/// climate, and terrain arrive with the phases that generate them; in
-/// particular there is deliberately no terrain layer while
+/// Only the fields that exist at this phase appear here. Terrain arrives with
+/// the phase that generates it; there is deliberately no terrain layer while
 /// [`wgvb::Tile::terrain`] is provisional, because a terrain image nobody
 /// should trust is worse than no terrain image.
 ///
 /// Almost every layer reads one scalar out of a [`Sample`], which is what keeps
-/// the renderer from needing a second traversal of the world per layer.
-/// [`Layer::Relief`] is the exception: relief costs seven elevation
-/// evaluations, so a sample does not carry it and the layer asks the generator
-/// directly.
+/// the renderer from needing a second traversal of the world per layer. There
+/// are two exceptions, and they are different kinds of exception:
+///
+/// - [`Layer::Relief`] is a scalar the sample does not carry, because relief
+///   costs seven elevation evaluations and no other layer should pay for it. It
+///   asks the generator directly.
+/// - [`Layer::Climate`] is not a scalar at all. It is a pair of bands, so it
+///   has no place on the scalar ramp and [`Layer::value`] returns nothing for
+///   it; [`Layer::color_at`] is the total function and is what the renderer
+///   uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Layer {
     Continentalness,
@@ -147,11 +152,36 @@ pub enum Layer {
     /// gone wrong would draw a grid of parallelograms at those spacings, which
     /// is unmistakable at a small hex radius over a wide window.
     RegionInfluence,
+
+    /// The temperature scalar of `DESIGN.md` section 16, with elevation cooling
+    /// already in it.
+    ///
+    /// Read against [`Layer::Elevation`] over the same window: the broad zones
+    /// are the heat field, and the cold threads running through them are the
+    /// high ground.
+    Temperature,
+    /// The moisture scalar of section 16.
+    ///
+    /// Broad like temperature but not the same shape, which is the point — the
+    /// two axes are independent. Coastlines do not show on it, because moisture
+    /// does not read elevation.
+    Moisture,
+    /// The two climate bands as one image, from the table in [`climate_color`].
+    ///
+    /// This is the layer the phase 5 exit condition is read off, and the one
+    /// that answers it directly: broad zones that hold together, or per-tile
+    /// speckle. Wetter is greener across the image and warmer is redder down
+    /// it, so a reader can orient the two axes without a key.
+    ///
+    /// Bands rather than a ramp, so a boundary is a boundary. The two scalar
+    /// layers show where inside a band a tile sits; this one shows which band
+    /// it is, which is what a terrain classifier will read in phase 6.
+    Climate,
 }
 
 impl Layer {
     /// Every layer, in the order the command line lists them.
-    pub const ALL: [Layer; 10] = [
+    pub const ALL: [Layer; 13] = [
         Layer::Continentalness,
         Layer::Regional,
         Layer::Local,
@@ -162,6 +192,9 @@ impl Layer {
         Layer::Ridge,
         Layer::Roughness,
         Layer::RegionInfluence,
+        Layer::Temperature,
+        Layer::Moisture,
+        Layer::Climate,
     ];
 
     /// The layer's command-line name.
@@ -178,6 +211,9 @@ impl Layer {
             Layer::Ridge => "ridge",
             Layer::Roughness => "roughness",
             Layer::RegionInfluence => "region-influence",
+            Layer::Temperature => "temperature",
+            Layer::Moisture => "moisture",
+            Layer::Climate => "climate",
         }
     }
 
@@ -195,16 +231,38 @@ impl Layer {
             .ok_or_else(|| RenderError::UnknownLayer(name.to_string()))
     }
 
-    /// This layer's scalar at one coordinate.
+    /// This layer's scalar at one coordinate, or `None` if it has none.
     ///
-    /// One generator call for every layer but [`Layer::Relief`], which needs
-    /// the six neighboring elevations and so asks for relief directly rather
-    /// than making every other layer pay for it.
+    /// One generator call for every scalar layer but [`Layer::Relief`], which
+    /// needs the six neighboring elevations and so asks for relief directly
+    /// rather than making every other layer pay for it.
+    ///
+    /// [`Layer::Climate`] is a pair of bands and has no scalar, so it is the
+    /// one layer that returns `None`. An `Option` rather than a panic or a
+    /// stand-in number: a caller that wants to plot a layer has to know it is
+    /// plotting something plottable, and the compiler is a better place to
+    /// learn that than a rendered image. [`Layer::color_at`] is total.
     #[must_use]
-    pub fn value(self, generator: &Generator, coord: Coord) -> f64 {
+    pub fn value(self, generator: &Generator, coord: Coord) -> Option<f64> {
         match self {
-            Layer::Relief => generator.relief(coord),
-            other => other.of_sample(&generator.sample(coord)),
+            Layer::Climate => None,
+            Layer::Relief => Some(generator.relief(coord)),
+            other => Some(other.of_sample(&generator.sample(coord))),
+        }
+    }
+
+    /// The color of one tile in this layer.
+    ///
+    /// The total function, and the one [`render`] uses: every layer colors
+    /// every tile. Scalar layers go through the shared ramp so that two of them
+    /// can be compared by eye; [`Layer::Climate`] goes through its own table,
+    /// because a pair of bands has no position on a ramp.
+    #[must_use]
+    pub fn color_at(self, generator: &Generator, coord: Coord) -> [u8; 4] {
+        match self {
+            Layer::Climate => climate_color(generator.tile(coord).climate),
+            Layer::Relief => color(generator.relief(coord)),
+            other => color(other.of_sample(&generator.sample(coord))),
         }
     }
 
@@ -212,8 +270,9 @@ impl Layer {
     ///
     /// # Panics
     ///
-    /// Panics for [`Layer::Relief`], which a [`Sample`] does not carry. Private
-    /// for that reason; [`Layer::value`] is the total function.
+    /// Panics for [`Layer::Relief`], which a [`Sample`] does not carry, and for
+    /// [`Layer::Climate`], which is not a scalar. Private for that reason;
+    /// [`Layer::value`] and [`Layer::color_at`] are the total functions.
     fn of_sample(self, sample: &Sample) -> f64 {
         match self {
             Layer::Continentalness => sample.continentalness,
@@ -225,7 +284,10 @@ impl Layer {
             Layer::Ridge => sample.ridge,
             Layer::Roughness => sample.roughness,
             Layer::RegionInfluence => sample.regional_uplift,
+            Layer::Temperature => sample.heat,
+            Layer::Moisture => sample.moisture,
             Layer::Relief => unreachable!("relief is not carried by a sample"),
+            Layer::Climate => unreachable!("climate is not a scalar"),
         }
     }
 }
@@ -501,7 +563,7 @@ impl Image {
     }
 }
 
-/// Renders one scalar layer of a viewport.
+/// Renders one layer of a viewport.
 ///
 /// Tiles are sampled in ascending `(col, row)` order — a total order over the
 /// viewport's cells — and the result is a color table consulted once per pixel.
@@ -519,8 +581,8 @@ pub fn render(generator: &Generator, viewport: &Viewport, layer: Layer) -> Image
     let mut colors = vec![BACKGROUND; cols as usize * rows as usize];
     for col in 0..cols {
         for row in 0..rows {
-            let value = layer.value(generator, viewport.coord_at(col, row));
-            colors[col as usize * rows as usize + row as usize] = color(value);
+            let pixel = layer.color_at(generator, viewport.coord_at(col, row));
+            colors[col as usize * rows as usize + row as usize] = pixel;
         }
     }
 
@@ -971,7 +1033,7 @@ mod tests {
                     let coord = viewport.coord_at(col, row);
                     assert_eq!(
                         image.pixel(px, py),
-                        Some(color(layer.value(&generator, coord))),
+                        Some(layer.color_at(&generator, coord)),
                         "{} at ({col}, {row})",
                         layer.name()
                     );

@@ -109,6 +109,27 @@ pub struct Config {
     /// Wavelength of the finest terrain detail.
     pub detail_wavelength_miles: f64,
 
+    /// Wavelength of the broad heat field of `DESIGN.md` section 16.
+    ///
+    /// Longer than [`Config::continental_wavelength_miles`] on purpose. The
+    /// wrapped world has no equator, so heat zones are procedural rather than
+    /// latitudinal, and a climate band shorter than a continent would put a
+    /// desert and an icecap on the same island. At two thousand hexes a
+    /// continent spans about half a zone.
+    pub heat_wavelength_miles: f64,
+    /// Wavelength of the broad moisture field.
+    ///
+    /// Shorter than the heat field: rainfall varies over a continent in a way
+    /// temperature does not, and the two axes are meant to read as independent
+    /// rather than as one field and its shadow.
+    pub moisture_wavelength_miles: f64,
+    /// Wavelength of the local variation term of the moisture composite.
+    ///
+    /// The `local_variation` of section 16's moisture formula. Heat has no
+    /// counterpart, which is section 16 written literally rather than an
+    /// omission.
+    pub moisture_variation_wavelength_miles: f64,
+
     /// Wavelength of the ridge structure field of `DESIGN.md` section 10.
     ///
     /// The *crests* this produces are the zero crossings of that field, so they
@@ -159,6 +180,12 @@ pub struct Config {
     pub local_octaves: u8,
     /// Octave count for the finest detail ladder, in `1..=16`.
     pub detail_octaves: u8,
+    /// Octave count for the broad heat ladder, in `1..=16`.
+    pub heat_octaves: u8,
+    /// Octave count for the broad moisture ladder, in `1..=16`.
+    pub moisture_octaves: u8,
+    /// Octave count for the moisture variation ladder, in `1..=16`.
+    pub moisture_variation_octaves: u8,
     /// Frequency multiplier between successive fbm octaves.
     ///
     /// Shared by every ladder: lacunarity is shape rather than scale, and
@@ -185,6 +212,70 @@ pub struct Config {
     pub uplift_weight: f64,
     /// Weight of the ridge structure term in the elevation scalar.
     pub ridge_weight: f64,
+
+    /// Weight of the broad heat field in the temperature composite of
+    /// `DESIGN.md` section 16.
+    ///
+    /// The composite divides by the total weight, so this and
+    /// [`Config::heat_region_weight`] are relative amplitudes. Elevation
+    /// cooling is not one of them; it is subtracted afterwards, which is what
+    /// section 16's formula says and is why a mountain is colder than the plain
+    /// it stands on rather than merely closer to the regional average.
+    pub heat_field_weight: f64,
+    /// Weight of the blended region heat bias in the temperature composite.
+    pub heat_region_weight: f64,
+    /// Weight of the broad moisture field in the moisture composite.
+    pub moisture_field_weight: f64,
+    /// Weight of the blended region moisture bias in the moisture composite.
+    pub moisture_region_weight: f64,
+    /// Weight of the local variation term in the moisture composite.
+    pub moisture_variation_weight: f64,
+
+    /// How much temperature the full height of the land scale costs, in
+    /// `[0, 2]`.
+    ///
+    /// The `elevation_cooling` of section 16. Cooling is proportional to height
+    /// *above sea level*, so it is zero everywhere on water — an ocean is as
+    /// warm as its latitude, not as cold as its depth — and reaches this value
+    /// at an elevation of `+1`.
+    ///
+    /// Two is the largest that can matter: temperature is in `[-1, +1]`, so a
+    /// cooling of two takes the warmest possible summit to the bottom of the
+    /// scale. Zero disables it, which is the configuration the tests use to
+    /// show what cooling is responsible for.
+    pub elevation_cooling: f64,
+
+    /// Upper bound of [`crate::HeatBand::Polar`], on the normalized `[-1, +1]`
+    /// temperature scale.
+    ///
+    /// One of the four heat thresholds, which must ascend strictly:
+    /// `polar_level < cold_level < temperate_level < warm_level`. Above
+    /// `warm_level` a tile is [`crate::HeatBand::Hot`]. Measured against
+    /// `tests/climate.rs` rather than guessed, for the same reason
+    /// [`Config::elevation_offset`] was.
+    pub polar_level: f64,
+    /// Upper bound of [`crate::HeatBand::Cold`].
+    pub cold_level: f64,
+    /// Upper bound of [`crate::HeatBand::Temperate`].
+    pub temperate_level: f64,
+    /// Upper bound of [`crate::HeatBand::Warm`]; above it,
+    /// [`crate::HeatBand::Hot`].
+    pub warm_level: f64,
+
+    /// Upper bound of [`crate::MoistureBand::Arid`], on the normalized
+    /// `[-1, +1]` moisture scale.
+    ///
+    /// One of the four moisture thresholds, which must ascend strictly:
+    /// `arid_level < dry_level < moderate_level < humid_level`. Above
+    /// `humid_level` a tile is [`crate::MoistureBand::Saturated`].
+    pub arid_level: f64,
+    /// Upper bound of [`crate::MoistureBand::Dry`].
+    pub dry_level: f64,
+    /// Upper bound of [`crate::MoistureBand::Moderate`].
+    pub moderate_level: f64,
+    /// Upper bound of [`crate::MoistureBand::Humid`]; above it,
+    /// [`crate::MoistureBand::Saturated`].
+    pub humid_level: f64,
 
     /// Constant added to the elevation composite before it is shaped.
     ///
@@ -303,6 +394,14 @@ impl Default for Config {
             // 6 hexes.
             detail_wavelength_miles: 36.0,
 
+            // 2,000 hexes. Longer than the continental field, so a climate
+            // zone is bigger than a continent rather than a stripe across one.
+            heat_wavelength_miles: 12_000.0,
+            // 1,000 hexes.
+            moisture_wavelength_miles: 6_000.0,
+            // 100 hexes.
+            moisture_variation_wavelength_miles: 600.0,
+
             // 80 hexes, so crests land roughly 40 hexes apart. That sits inside
             // the 40-200 hex "regional relief" row of the section 10 table.
             ridge_wavelength_miles: 480.0,
@@ -336,6 +435,14 @@ impl Default for Config {
             ridge_octaves: 5,
             local_octaves: 4,
             detail_octaves: 2,
+            // Climate is broad by construction: three octaves take the heat
+            // field down to 3,000 miles and the moisture field to 1,500, which
+            // is still hundreds of hexes. The exit condition for this phase is
+            // coherent zones rather than tile-level speckle, and the octave
+            // count is where that is won or lost.
+            heat_octaves: 3,
+            moisture_octaves: 3,
+            moisture_variation_octaves: 3,
             fbm_lacunarity: 2.0,
             fbm_gain: 0.5,
 
@@ -352,6 +459,50 @@ impl Default for Config {
             // continent rather than inventing one.
             uplift_weight: 0.4,
             ridge_weight: 0.3,
+
+            // The same halving ladder again: the broad field decides the
+            // climate of a place and the region bias varies it, rather than the
+            // two competing. Moisture's local variation is weaker still — it is
+            // texture on a wet or dry region, not a second opinion about which
+            // one this is.
+            heat_field_weight: 1.0,
+            heat_region_weight: 0.5,
+            moisture_field_weight: 1.0,
+            moisture_region_weight: 0.5,
+            moisture_variation_weight: 0.25,
+
+            // Measured against `tests/climate.rs`: with cooling disabled the
+            // mountain bands sit wherever the broad field put them, and 0.6
+            // moves an elevation of +1 down by a little under two heat bands.
+            // That is enough for an icecap on a high range inside a temperate
+            // zone and not so much that every mountain in the world is polar.
+            elevation_cooling: 0.6,
+
+            // Measured, not guessed. Both composites are weighted averages of
+            // zero-mean fields and neither is shaped afterwards, so they
+            // cluster near the middle of the scale the way the unshaped
+            // elevation composite does; these are the quantiles of the
+            // generated distribution, rounded, chosen so that no band is empty
+            // and none of them holds most of the world. The shares they produce
+            // are roughly 15 / 22 / 27 / 25 / 11 for heat and 9 / 25 / 32 /
+            // 24 / 10 for moisture. `tests/climate.rs` asserts bounds around
+            // those rather than the numbers themselves, so an ordinary retune
+            // does not have to touch the test.
+            //
+            // The heat ladder is the moisture ladder shifted down by 0.05,
+            // because elevation cooling only ever subtracts: it pulls the heat
+            // distribution below zero and leaves it there. A symmetric ladder
+            // over an asymmetric distribution is how a world ends up a third
+            // polar.
+            polar_level: -0.35,
+            cold_level: -0.15,
+            temperate_level: 0.05,
+            warm_level: 0.25,
+
+            arid_level: -0.30,
+            dry_level: -0.10,
+            moderate_level: 0.10,
+            humid_level: 0.30,
 
             // Measured, not guessed: the unshaped composite has its 69th
             // percentile at about +0.13, so sinking the world by that much puts
@@ -406,25 +557,38 @@ impl Config {
         in_range("upland_level", self.upland_level, -1.0, 1.0)?;
         in_range("highland_level", self.highland_level, -1.0, 1.0)?;
         in_range("mountain_level", self.mountain_level, -1.0, 1.0)?;
-        let ladder = [
+        ascending(&[
             ("deep_water_level", self.deep_water_level),
             ("sea_level", self.sea_level),
             ("upland_level", self.upland_level),
             ("highland_level", self.highland_level),
             ("mountain_level", self.mountain_level),
-        ];
-        for pair in ladder.windows(2) {
-            let (below, limit) = pair[0];
-            let (field, value) = pair[1];
-            if value <= limit {
-                return Err(ConfigError::NotAscending {
-                    field,
-                    value,
-                    below,
-                    limit,
-                });
-            }
-        }
+        ])?;
+
+        // The two climate ladders, checked the same way and for the same
+        // reason. Section 16.1 keeps heat and moisture independent, so they are
+        // two ladders rather than one.
+        in_range("polar_level", self.polar_level, -1.0, 1.0)?;
+        in_range("cold_level", self.cold_level, -1.0, 1.0)?;
+        in_range("temperate_level", self.temperate_level, -1.0, 1.0)?;
+        in_range("warm_level", self.warm_level, -1.0, 1.0)?;
+        ascending(&[
+            ("polar_level", self.polar_level),
+            ("cold_level", self.cold_level),
+            ("temperate_level", self.temperate_level),
+            ("warm_level", self.warm_level),
+        ])?;
+
+        in_range("arid_level", self.arid_level, -1.0, 1.0)?;
+        in_range("dry_level", self.dry_level, -1.0, 1.0)?;
+        in_range("moderate_level", self.moderate_level, -1.0, 1.0)?;
+        in_range("humid_level", self.humid_level, -1.0, 1.0)?;
+        ascending(&[
+            ("arid_level", self.arid_level),
+            ("dry_level", self.dry_level),
+            ("moderate_level", self.moderate_level),
+            ("humid_level", self.humid_level),
+        ])?;
 
         positive(
             "continental_wavelength_miles",
@@ -435,6 +599,12 @@ impl Config {
         positive("detail_wavelength_miles", self.detail_wavelength_miles)?;
         positive("ridge_wavelength_miles", self.ridge_wavelength_miles)?;
         positive("ridge_elongation_miles", self.ridge_elongation_miles)?;
+        positive("heat_wavelength_miles", self.heat_wavelength_miles)?;
+        positive("moisture_wavelength_miles", self.moisture_wavelength_miles)?;
+        positive(
+            "moisture_variation_wavelength_miles",
+            self.moisture_variation_wavelength_miles,
+        )?;
 
         positive("warp_wavelength_miles", self.warp_wavelength_miles)?;
         positive("warp_strength_miles", self.warp_strength_miles)?;
@@ -468,6 +638,12 @@ impl Config {
         positive("detail_weight", self.detail_weight)?;
         positive("uplift_weight", self.uplift_weight)?;
         positive("ridge_weight", self.ridge_weight)?;
+        positive("heat_field_weight", self.heat_field_weight)?;
+        positive("heat_region_weight", self.heat_region_weight)?;
+        positive("moisture_field_weight", self.moisture_field_weight)?;
+        positive("moisture_region_weight", self.moisture_region_weight)?;
+        positive("moisture_variation_weight", self.moisture_variation_weight)?;
+        in_range("elevation_cooling", self.elevation_cooling, 0.0, 2.0)?;
 
         in_range("elevation_offset", self.elevation_offset, -1.0, 1.0)?;
         in_range("elevation_contrast", self.elevation_contrast, 0.0, 1.0)?;
@@ -521,6 +697,21 @@ impl Config {
                 self.detail_octaves,
                 self.detail_wavelength_miles,
             ),
+            (
+                "heat_octaves",
+                self.heat_octaves,
+                self.heat_wavelength_miles,
+            ),
+            (
+                "moisture_octaves",
+                self.moisture_octaves,
+                self.moisture_wavelength_miles,
+            ),
+            (
+                "moisture_variation_octaves",
+                self.moisture_variation_octaves,
+                self.moisture_variation_wavelength_miles,
+            ),
         ]
         .into_iter()
     }
@@ -557,6 +748,30 @@ impl Config {
         }
         Ok(())
     }
+}
+
+/// Rejects a ladder of thresholds that does not ascend strictly.
+///
+/// Shared by the elevation ladder and the two climate ladders. A ladder with an
+/// out-of-order rung leaves a band unreachable, and a classifier that can never
+/// return a variant is a silently broken world rather than a compile error.
+/// Every value is checked for range before it reaches here, so a not-a-number
+/// is reported as `NotFinite` rather than slipping through a comparison that is
+/// false either way.
+fn ascending(ladder: &[(&'static str, f64)]) -> Result<(), ConfigError> {
+    for pair in ladder.windows(2) {
+        let (below, limit) = pair[0];
+        let (field, value) = pair[1];
+        if value <= limit {
+            return Err(ConfigError::NotAscending {
+                field,
+                value,
+                below,
+                limit,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Rejects a non-finite or non-positive scale.
@@ -649,6 +864,9 @@ mod tests {
             ("local", c.local_wavelength_miles),
             ("detail", c.detail_wavelength_miles),
             ("ridge", c.ridge_wavelength_miles),
+            ("heat", c.heat_wavelength_miles),
+            ("moisture", c.moisture_wavelength_miles),
+            ("moisture variation", c.moisture_variation_wavelength_miles),
             ("ridge elongation", c.ridge_elongation_miles),
             ("warp", c.warp_wavelength_miles),
             ("detail warp", c.detail_warp_wavelength_miles),
@@ -687,6 +905,13 @@ mod tests {
             ("ridge_wavelength_miles", |c, v| {
                 c.ridge_wavelength_miles = v
             }),
+            ("heat_wavelength_miles", |c, v| c.heat_wavelength_miles = v),
+            ("moisture_wavelength_miles", |c, v| {
+                c.moisture_wavelength_miles = v
+            }),
+            ("moisture_variation_wavelength_miles", |c, v| {
+                c.moisture_variation_wavelength_miles = v
+            }),
             ("ridge_elongation_miles", |c, v| {
                 c.ridge_elongation_miles = v
             }),
@@ -704,6 +929,24 @@ mod tests {
             ("detail_weight", |c, v| c.detail_weight = v),
             ("uplift_weight", |c, v| c.uplift_weight = v),
             ("ridge_weight", |c, v| c.ridge_weight = v),
+            ("heat_field_weight", |c, v| c.heat_field_weight = v),
+            ("heat_region_weight", |c, v| c.heat_region_weight = v),
+            ("moisture_field_weight", |c, v| c.moisture_field_weight = v),
+            ("moisture_region_weight", |c, v| {
+                c.moisture_region_weight = v
+            }),
+            ("moisture_variation_weight", |c, v| {
+                c.moisture_variation_weight = v
+            }),
+            ("elevation_cooling", |c, v| c.elevation_cooling = v),
+            ("polar_level", |c, v| c.polar_level = v),
+            ("cold_level", |c, v| c.cold_level = v),
+            ("temperate_level", |c, v| c.temperate_level = v),
+            ("warm_level", |c, v| c.warm_level = v),
+            ("arid_level", |c, v| c.arid_level = v),
+            ("dry_level", |c, v| c.dry_level = v),
+            ("moderate_level", |c, v| c.moderate_level = v),
+            ("humid_level", |c, v| c.humid_level = v),
             ("elevation_offset", |c, v| c.elevation_offset = v),
             ("elevation_contrast", |c, v| c.elevation_contrast = v),
             ("relief_reference_delta_per_hex", |c, v| {
@@ -752,6 +995,14 @@ mod tests {
             "detail_weight",
             "uplift_weight",
             "ridge_weight",
+            "heat_field_weight",
+            "heat_region_weight",
+            "moisture_field_weight",
+            "moisture_region_weight",
+            "moisture_variation_weight",
+            "heat_wavelength_miles",
+            "moisture_wavelength_miles",
+            "moisture_variation_wavelength_miles",
             "relief_reference_delta_per_hex",
             "fbm_gain",
             "macro_region_influence",
@@ -859,6 +1110,138 @@ mod tests {
     }
 
     #[test]
+    fn the_climate_ladders_must_ascend_strictly() {
+        // Section 16.1's two ladders, checked the way section 14.1's is. Two
+        // separate ladders rather than one, so a threshold from one axis must
+        // never be compared against a threshold from the other.
+        for ordered in [
+            ["polar_level", "cold_level", "temperate_level", "warm_level"],
+            ["arid_level", "dry_level", "moderate_level", "humid_level"],
+        ] {
+            let baseline = Config::default();
+            let values: Vec<f64> = ordered
+                .iter()
+                .map(|name| match *name {
+                    "polar_level" => baseline.polar_level,
+                    "cold_level" => baseline.cold_level,
+                    "temperate_level" => baseline.temperate_level,
+                    "warm_level" => baseline.warm_level,
+                    "arid_level" => baseline.arid_level,
+                    "dry_level" => baseline.dry_level,
+                    "moderate_level" => baseline.moderate_level,
+                    "humid_level" => baseline.humid_level,
+                    other => unreachable!("{other}"),
+                })
+                .collect();
+            for pair in values.windows(2) {
+                assert!(pair[0] < pair[1], "the defaults are not ascending");
+            }
+
+            // Push each threshold down onto the one below it, and then past it.
+            for index in 1..ordered.len() {
+                for offset in [0.0, 0.1] {
+                    let mut config = Config::default();
+                    let (_, set) = float_fields()
+                        .into_iter()
+                        .find(|(name, _)| *name == ordered[index])
+                        .unwrap();
+                    set(&mut config, values[index - 1] - offset);
+                    let error = config
+                        .validate()
+                        .expect_err("a non-ascending ladder was accepted");
+                    assert!(
+                        matches!(
+                            error,
+                            ConfigError::NotAscending { field, below, .. }
+                                if field == ordered[index] && below == ordered[index - 1]
+                        ),
+                        "{} at {} produced {error:?}",
+                        ordered[index],
+                        values[index - 1] - offset
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_climate_threshold_outside_the_normalized_range_is_rejected() {
+        for field in [
+            "polar_level",
+            "cold_level",
+            "temperate_level",
+            "warm_level",
+            "arid_level",
+            "dry_level",
+            "moderate_level",
+            "humid_level",
+        ] {
+            for bad in [1.000_001, -1.000_001, 5.0, -5.0] {
+                let mut config = Config::default();
+                let (_, set) = float_fields()
+                    .into_iter()
+                    .find(|(name, _)| *name == field)
+                    .unwrap();
+                set(&mut config, bad);
+                let error = config
+                    .validate()
+                    .expect_err("an out-of-range climate threshold was accepted");
+                assert!(
+                    matches!(
+                        error,
+                        ConfigError::OutOfRange {
+                            field: f,
+                            lo: -1.0,
+                            hi: 1.0,
+                            ..
+                        } if f == field
+                    ),
+                    "{field} with {bad} produced {error:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_out_of_range_cooling_strength_is_rejected_and_zero_is_not() {
+        // Zero is a legal configuration — it is the one the climate tests use
+        // to show what cooling is responsible for — so this cannot be a
+        // `positive` check.
+        assert_eq!(
+            Config {
+                elevation_cooling: 0.0,
+                ..Config::default()
+            }
+            .validate(),
+            Ok(())
+        );
+        assert_eq!(
+            Config {
+                elevation_cooling: 2.0,
+                ..Config::default()
+            }
+            .validate(),
+            Ok(())
+        );
+        for bad in [-0.000_001, 2.000_001, 100.0] {
+            let config = Config {
+                elevation_cooling: bad,
+                ..Config::default()
+            };
+            assert!(
+                matches!(
+                    config.validate(),
+                    Err(ConfigError::OutOfRange {
+                        field: "elevation_cooling",
+                        ..
+                    })
+                ),
+                "cooling {bad}"
+            );
+        }
+    }
+
+    #[test]
     fn a_sea_level_that_keeps_the_ladder_ordered_is_accepted() {
         // Sea level is the tuning knob for land fraction, so moving it within
         // the ladder must not need any other edit.
@@ -901,6 +1284,9 @@ mod tests {
                 ridge_octaves: 1,
                 local_octaves: 1,
                 detail_octaves: 1,
+                heat_octaves: 1,
+                moisture_octaves: 1,
+                moisture_variation_octaves: 1,
                 ..Config::default()
             };
             assert_eq!(config.validate(), Ok(()), "lacunarity {good}");
@@ -939,6 +1325,11 @@ mod tests {
             ("ridge_octaves", |c, v| c.ridge_octaves = v),
             ("local_octaves", |c, v| c.local_octaves = v),
             ("detail_octaves", |c, v| c.detail_octaves = v),
+            ("heat_octaves", |c, v| c.heat_octaves = v),
+            ("moisture_octaves", |c, v| c.moisture_octaves = v),
+            ("moisture_variation_octaves", |c, v| {
+                c.moisture_variation_octaves = v
+            }),
         ]
     }
 

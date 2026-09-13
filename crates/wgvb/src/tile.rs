@@ -14,8 +14,9 @@
 //!
 //! Phase 1 defined these types and nothing that assigned them. Phase 4 assigns
 //! [`Tile::elevation_value`], [`Tile::relief_value`], and [`Tile::elevation`];
-//! [`Tile::climate`] and [`Tile::terrain`] are still provisional and are
-//! documented as such on the fields themselves.
+//! phase 5 assigns [`Tile::heat_value`], [`Tile::moisture_value`], and
+//! [`Tile::climate`]. [`Tile::terrain`] is still provisional and is documented
+//! as such on the field itself.
 
 use crate::Coord;
 
@@ -149,32 +150,37 @@ pub struct Tile {
     /// Normalized elevation: `-1.0` deep ocean, `0.0` sea level, `+1.0` extreme
     /// highland.
     pub elevation_value: f64,
-    /// Normalized heat, the value [`Climate::heat`] was classified from.
+    /// Normalized heat: `-1.0` the coldest the world gets, `+1.0` the warmest.
+    ///
+    /// The value [`Climate::heat`] was classified from, and elevation cooling
+    /// is already in it. Ordinary tile data, not a diagnostic: a renderer
+    /// drawing a temperature gradient inside one band needs the number, not the
+    /// band.
     pub heat_value: f64,
-    /// Normalized moisture, the value [`Climate::moisture`] was classified from.
+    /// Normalized moisture: `-1.0` driest, `+1.0` wettest.
+    ///
+    /// The value [`Climate::moisture`] was classified from.
     pub moisture_value: f64,
     /// Normalized local relief, estimated from the six neighboring elevations.
     pub relief_value: f64,
 
     pub elevation: Elevation,
 
-    /// **Provisional until phase 5.** The heat and moisture fields do not exist
-    /// yet, so every tile reports the middle of both axes and
-    /// [`Tile::heat_value`] and [`Tile::moisture_value`] are zero. Do not build
-    /// anything on this value; it is here so the shape of a [`Tile`] does not
-    /// change when climate lands.
+    /// The two independent climate bands, classified from [`Tile::heat_value`]
+    /// and [`Tile::moisture_value`] against the configured ladders.
     pub climate: Climate,
 
     /// **Provisional until phase 6.** Derived from the elevation band alone,
     /// which is not how terrain is meant to be classified: section 17 derives
-    /// it from elevation, relief, and climate together, and two of those are
-    /// not generated yet.
+    /// it from elevation, relief, and climate together, and all three now
+    /// exist — this field simply has not been rewritten to read them yet.
     ///
     /// The value is a plausible one rather than a placeholder constant so that
     /// a caller reading it sees water where there is water — but it carries no
     /// climate information at all, so there is no tundra, no desert, and no
-    /// forest anywhere in the world. The diagnostic renderer deliberately has
-    /// no terrain layer at this phase for that reason.
+    /// forest anywhere in the world, however cold or dry a tile reports itself
+    /// to be. The diagnostic renderer deliberately has no terrain layer at this
+    /// phase for that reason, while it does have a climate one.
     pub terrain: Terrain,
 }
 

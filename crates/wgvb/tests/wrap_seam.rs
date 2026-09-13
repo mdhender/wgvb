@@ -45,7 +45,7 @@ use wgvb::{Coord, Generator, Sample, WORLD_RADIUS};
 const SEED: u64 = 0x7777_1111_2222_3333;
 
 /// Every scalar a [`Sample`] carries, named, in a fixed order.
-fn scalars(s: &Sample) -> [(&'static str, f64); 9] {
+fn scalars(s: &Sample) -> [(&'static str, f64); 11] {
     [
         ("continentalness", s.continentalness),
         ("regional", s.regional),
@@ -56,6 +56,8 @@ fn scalars(s: &Sample) -> [(&'static str, f64); 9] {
         ("regional_uplift", s.regional_uplift),
         ("roughness", s.roughness),
         ("elevation", s.elevation),
+        ("heat", s.heat),
+        ("moisture", s.moisture),
     ]
 }
 

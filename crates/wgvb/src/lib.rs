@@ -12,6 +12,7 @@
 //!
 //! This crate is intentionally free of persistence and rendering dependencies.
 
+mod climate;
 mod config;
 mod coord;
 mod elevation;
@@ -29,9 +30,9 @@ pub use field::Field;
 pub use generator::{Generator, Sample};
 pub use hash::{
     DOM_BASIN, DOM_CONTINENTALNESS, DOM_DETAIL_WARP_X, DOM_DETAIL_WARP_Y, DOM_FIELD_OFFSET,
-    DOM_MOISTURE, DOM_REGION_STYLE, DOM_REGIONAL_ELEVATION, DOM_RELIEF, DOM_RIDGE_ORIENTATION,
-    DOM_RIDGE_STRUCTURE, DOM_TEMPERATURE, DOM_TERRAIN_DETAIL, DOM_VOLCANIC, DOM_WARP_X, DOM_WARP_Y,
-    domain, hash_n, hash2, hash3, signed_unit_f64, unit_f64,
+    DOM_MOISTURE, DOM_MOISTURE_VARIATION, DOM_REGION_STYLE, DOM_REGIONAL_ELEVATION, DOM_RELIEF,
+    DOM_RIDGE_ORIENTATION, DOM_RIDGE_STRUCTURE, DOM_TEMPERATURE, DOM_TERRAIN_DETAIL, DOM_VOLCANIC,
+    DOM_WARP_X, DOM_WARP_Y, domain, hash_n, hash2, hash3, signed_unit_f64, unit_f64,
 };
 pub use region::{RegionParams, UnitVec2};
 pub use tile::{Climate, Elevation, HeatBand, MoistureBand, Terrain, Tile};
@@ -61,7 +62,16 @@ pub use tile::{Climate, Elevation, HeatBand, MoistureBand, Terrain, Tile};
 ///   being a lattice point of every scale at once. The first changes what the
 ///   fields contain, the second changes where they are sampled, and both move
 ///   every value at every coordinate.
-pub const ALGORITHM_VERSION: u32 = 3;
+/// - **4** — phase 5. Climate. Unlike version 3 this moves nothing: elevation,
+///   relief, and every field they are built from are bit-identical to what
+///   version 3 produced, and the golden tables that pin them did not have to be
+///   re-recorded. What changed is [`Config`], which gained the climate
+///   wavelengths, octave counts, weights, cooling strength, and two band
+///   ladders. That is the bump on its own. No field there carries
+///   `#[serde(default)]`, deliberately, so a world file written under version 3
+///   does not carry those values and cannot be reopened — and a version number
+///   that stayed at 3 would be claiming otherwise. See section 21.1.
+pub const ALGORITHM_VERSION: u32 = 4;
 
 /// World seed. One seed plus one [`Config`] plus one [`ALGORITHM_VERSION`]
 /// determines every tile.

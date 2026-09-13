@@ -16,7 +16,7 @@ use crate::view::{COMPASS, Compass, MAX_HEX_RADIUS, MIN_HEX_RADIUS, View};
 ///
 /// Every value interpolated here has already been through [`View::parse`], so
 /// it is a `u64`, a [`wgvb::Coord`] component, a bounded tile count, or one of
-/// ten fixed layer names. Nothing unvalidated reaches this function, which is
+/// the fixed layer names. Nothing unvalidated reaches this function, which is
 /// why there is no escaping in it; refusals are answered as `text/plain`
 /// instead, where a quoted-back URL is inert.
 #[must_use]
@@ -144,7 +144,7 @@ fn compass_rose(view: &View) -> String {
     html
 }
 
-/// The layer selector: ten links, one per layer, the current one marked.
+/// The layer selector: one link per layer, the current one marked.
 fn layers(view: &View) -> String {
     let mut html = String::new();
     html.push_str("<nav class=\"layers\" aria-label=\"choose a layer\">\n");

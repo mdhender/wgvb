@@ -1,13 +1,21 @@
-//! The diagnostic scalar palette.
+//! The diagnostic palettes.
 //!
 //! See `DESIGN.md` section 29.
 //!
-//! One ramp is used for every scalar layer, deliberately. A per-layer palette
+//! One ramp is used for every *scalar* layer, deliberately. A per-layer palette
 //! would make two layers of the same window impossible to compare by eye, which
 //! is the main thing the tuning renderer is for. The ramp reads as terrain —
 //! deep water through shallows, shore, vegetation, rock, and snow — because that
 //! is the shape a reader already knows how to interpret, not because any layer
 //! other than elevation means those things.
+//!
+//! Climate is the exception, and it has to be: it is not a scalar. A pair of
+//! bands has no position on a ramp, and flattening the two axes onto one would
+//! be the single mixed scale `DESIGN.md` section 16.1 forbids the model to
+//! have. [`climate_color`] is a two-dimensional table instead — one color per
+//! pair — so the two axes stay legible as two axes.
+
+use wgvb::Climate;
 
 /// Palette stops: a scalar position in `[-1, +1]` and its color.
 ///
@@ -33,6 +41,74 @@ const STOPS: [(f64, [u8; 3]); 11] = [
 
 /// The color of a pixel that belongs to no tile in the viewport.
 pub const BACKGROUND: [u8; 4] = [24, 24, 28, 255];
+
+/// One color per `(heat, moisture)` band pair, indexed by discriminant.
+///
+/// Read it as a grid with the two axes it draws: rows run polar to hot, columns
+/// arid to saturated. Two properties make it legible as a grid rather than as
+/// twenty-five unrelated swatches, and both are asserted by tests rather than
+/// left to the eye:
+///
+/// - along a row, green gains on red as the ground gets wetter;
+/// - down a column, red gains on blue as it gets warmer.
+///
+/// So a reader can tell which way is wetter and which way is warmer from the
+/// image alone, without a key. Changing an entry changes rendered output and so
+/// requires bumping [`crate::RENDER_VERSION`].
+const CLIMATE_COLORS: [[[u8; 3]; 5]; 5] = [
+    // Polar: pale, cold, and light enough that ice reads as ice.
+    [
+        [214, 222, 232],
+        [198, 210, 226],
+        [176, 196, 220],
+        [150, 180, 214],
+        [124, 164, 210],
+    ],
+    // Cold: grey through teal.
+    [
+        [178, 176, 150],
+        [150, 166, 148],
+        [118, 156, 146],
+        [92, 146, 148],
+        [66, 134, 150],
+    ],
+    // Temperate: straw through green.
+    [
+        [198, 182, 120],
+        [176, 186, 106],
+        [132, 176, 92],
+        [92, 160, 84],
+        [56, 140, 84],
+    ],
+    // Warm: gold through green.
+    [
+        [222, 186, 110],
+        [214, 182, 86],
+        [178, 174, 70],
+        [126, 162, 62],
+        [74, 146, 62],
+    ],
+    // Hot: desert orange through jungle green.
+    [
+        [228, 158, 96],
+        [218, 156, 74],
+        [198, 152, 62],
+        [150, 156, 52],
+        [58, 134, 44],
+    ],
+];
+
+/// The color of one climate, as an opaque RGBA.
+///
+/// A total function over the pair, by construction: the table is indexed by the
+/// pinned discriminants of [`wgvb::HeatBand`] and [`wgvb::MoistureBand`], both
+/// of which have exactly five variants, so every climate a generator can
+/// produce has an entry and none of them can be missed.
+#[must_use]
+pub fn climate_color(climate: Climate) -> [u8; 4] {
+    let rgb = CLIMATE_COLORS[climate.heat as usize][climate.moisture as usize];
+    [rgb[0], rgb[1], rgb[2], 255]
+}
 
 /// Maps a scalar in `[-1, +1]` to an opaque RGBA color.
 ///
@@ -89,6 +165,25 @@ pub fn color(value: f64) -> [u8; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wgvb::{HeatBand, MoistureBand};
+
+    /// Every heat band, in discriminant order.
+    const HEAT_BANDS: [HeatBand; 5] = [
+        HeatBand::Polar,
+        HeatBand::Cold,
+        HeatBand::Temperate,
+        HeatBand::Warm,
+        HeatBand::Hot,
+    ];
+
+    /// Every moisture band, in discriminant order.
+    const MOISTURE_BANDS: [MoistureBand; 5] = [
+        MoistureBand::Arid,
+        MoistureBand::Dry,
+        MoistureBand::Moderate,
+        MoistureBand::Humid,
+        MoistureBand::Saturated,
+    ];
 
     #[test]
     fn the_stops_ascend_and_span_the_whole_range() {
@@ -188,6 +283,111 @@ mod tests {
     fn every_color_is_fully_opaque() {
         for step in -200..=200_i32 {
             assert_eq!(color(f64::from(step) / 200.0)[3], 255);
+        }
+    }
+
+    #[test]
+    fn every_climate_has_its_own_color() {
+        // Two climates that rendered alike would waste an entry of the table
+        // and hide a distinction the model is built around.
+        let mut seen = Vec::new();
+        for heat in HEAT_BANDS {
+            for moisture in MOISTURE_BANDS {
+                let color = climate_color(Climate { heat, moisture });
+                assert_eq!(color[3], 255, "{heat:?}/{moisture:?} is not opaque");
+                assert!(
+                    !seen.contains(&color),
+                    "{heat:?}/{moisture:?} repeats {color:?}"
+                );
+                seen.push(color);
+            }
+        }
+        assert_eq!(seen.len(), 25);
+    }
+
+    #[test]
+    fn the_climate_table_reads_as_two_axes() {
+        // The property that lets a reader orient the grid without a key. Green
+        // gains on red rightwards along a row; red gains on blue downwards
+        // through a column. Both are strict, so no two neighboring entries are
+        // ambiguous about which way they lie.
+        let difference =
+            |color: [u8; 4], a: usize, b: usize| i32::from(color[a]) - i32::from(color[b]);
+
+        for heat in HEAT_BANDS {
+            let mut previous = i32::MIN;
+            for moisture in MOISTURE_BANDS {
+                let green_over_red = difference(climate_color(Climate { heat, moisture }), 1, 0);
+                assert!(
+                    green_over_red > previous,
+                    "{heat:?}: {moisture:?} is not greener than the band before it"
+                );
+                previous = green_over_red;
+            }
+        }
+
+        for moisture in MOISTURE_BANDS {
+            let mut previous = i32::MIN;
+            for heat in HEAT_BANDS {
+                let red_over_blue = difference(climate_color(Climate { heat, moisture }), 0, 2);
+                assert!(
+                    red_over_blue > previous,
+                    "{moisture:?}: {heat:?} is not warmer than the band before it"
+                );
+                previous = red_over_blue;
+            }
+        }
+    }
+
+    #[test]
+    fn adjacent_climates_are_visually_distinct() {
+        // Distinct is not enough on its own: two entries differing by one unit
+        // in one channel are distinct and indistinguishable.
+        let distance = |a: [u8; 4], b: [u8; 4]| -> u32 {
+            (0..3).map(|c| u32::from(a[c].abs_diff(b[c]))).sum()
+        };
+        for (h, heat) in HEAT_BANDS.into_iter().enumerate() {
+            for (m, moisture) in MOISTURE_BANDS.into_iter().enumerate() {
+                let here = climate_color(Climate { heat, moisture });
+                if m + 1 < MOISTURE_BANDS.len() {
+                    let right = climate_color(Climate {
+                        heat,
+                        moisture: MOISTURE_BANDS[m + 1],
+                    });
+                    assert!(
+                        distance(here, right) > 30,
+                        "{heat:?}: {moisture:?} and {:?} are too close",
+                        MOISTURE_BANDS[m + 1]
+                    );
+                }
+                if h + 1 < HEAT_BANDS.len() {
+                    let below = climate_color(Climate {
+                        heat: HEAT_BANDS[h + 1],
+                        moisture,
+                    });
+                    assert!(
+                        distance(here, below) > 30,
+                        "{moisture:?}: {heat:?} and {:?} are too close",
+                        HEAT_BANDS[h + 1]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn no_climate_is_mistakable_for_the_background() {
+        for heat in HEAT_BANDS {
+            for moisture in MOISTURE_BANDS {
+                let color = climate_color(Climate { heat, moisture });
+                let distance: u32 = (0..3)
+                    .map(|c| u32::from(color[c].abs_diff(BACKGROUND[c])))
+                    .sum();
+                assert!(
+                    distance > 120,
+                    "{heat:?}/{moisture:?} looks like the gutter"
+                );
+            }
         }
     }
 

@@ -49,6 +49,13 @@ pub const DOM_RELIEF: u64 = domain(b"relief");
 pub const DOM_MOISTURE: u64 = domain(b"moisture");
 /// Domain: heat field.
 pub const DOM_TEMPERATURE: u64 = domain(b"temperature");
+/// Domain: the short-wavelength variation term of the moisture composite.
+///
+/// Distinct from [`DOM_MOISTURE`], which is the broad field. Section 16 gives
+/// moisture a local variation term and gives temperature none, so this has no
+/// counterpart on the heat axis: a valley is wetter than the ridge beside it,
+/// and it is not warmer than the ridge beside it.
+pub const DOM_MOISTURE_VARIATION: u64 = domain(b"moisture-variation");
 /// Domain: fine terrain detail.
 pub const DOM_TERRAIN_DETAIL: u64 = domain(b"terrain-detail");
 /// Domain: per-region character selection.
@@ -241,6 +248,7 @@ mod tests {
         assert_eq!(DOM_RELIEF, 0xfa18_9c4d_af36_7720);
         assert_eq!(DOM_MOISTURE, 0x4532_a032_9655_240f);
         assert_eq!(DOM_TEMPERATURE, 0x5565_75c1_ce10_7955);
+        assert_eq!(DOM_MOISTURE_VARIATION, 0x2427_b6a4_1708_b52f);
         assert_eq!(DOM_TERRAIN_DETAIL, 0xa90f_24aa_e7b9_a828);
         assert_eq!(DOM_REGION_STYLE, 0x4115_6f2b_a1d9_a7d5);
         assert_eq!(DOM_RIDGE_ORIENTATION, 0x0f5b_ac88_66b1_037b);
@@ -268,6 +276,7 @@ mod tests {
             DOM_RELIEF,
             DOM_MOISTURE,
             DOM_TEMPERATURE,
+            DOM_MOISTURE_VARIATION,
             DOM_TERRAIN_DETAIL,
             DOM_REGION_STYLE,
             DOM_RIDGE_ORIENTATION,

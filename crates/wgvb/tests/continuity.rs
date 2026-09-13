@@ -15,21 +15,24 @@
 //! read an addressing index at all, so for them a seam would mean something had
 //! leaked in that has no business being there.
 //!
-//! `regional_uplift`, `roughness`, `ridge`, and `elevation` *are* addressed by
-//! region, and they are what section 30.5 is really about. The first two are
+//! `regional_uplift`, `roughness`, `ridge`, `elevation`, `heat`, and `moisture`
+//! *are* addressed by region, and they are what section 30.5 is really about. The first two are
 //! blended across the anchors around a tile; `ridge` reads the blended ridge
 //! orientation, so it fails here if the orientation blend creases even where
 //! the scalars do not; and `elevation` folds all of them together, which makes
-//! it the one that would show a seam a reader could actually see on a map. A
-//! seam in any of them would mean the blend had degenerated into the hard
-//! region boundary section 33.4 forbids.
+//! it the one that would show a seam a reader could actually see on a map. The
+//! two climate scalars carry the region's heat and moisture biases the same
+//! way, and `heat` additionally carries elevation through the cooling term, so
+//! a seam in `elevation` would reach it too. A seam in any of them would mean
+//! the blend had degenerated into the hard region boundary section 33.4
+//! forbids.
 
 use wgvb::{Config, Coord, Generator, Sample};
 
 const SEED: u64 = 0x00c0_ffee_0bad_f00d;
 
 /// Every scalar a [`Sample`] carries, named, in a fixed order.
-fn scalars(s: &Sample) -> [(&'static str, f64); 9] {
+fn scalars(s: &Sample) -> [(&'static str, f64); 11] {
     [
         ("continentalness", s.continentalness),
         ("regional", s.regional),
@@ -40,6 +43,8 @@ fn scalars(s: &Sample) -> [(&'static str, f64); 9] {
         ("regional_uplift", s.regional_uplift),
         ("roughness", s.roughness),
         ("elevation", s.elevation),
+        ("heat", s.heat),
+        ("moisture", s.moisture),
     ]
 }
 
@@ -88,8 +93,8 @@ fn steps_along_a_line(
     along_q: bool,
     fixed: i64,
     span: i64,
-) -> [Steps; 9] {
-    let mut steps = [Steps::default(); 9];
+) -> [Steps; 11] {
+    let mut steps = [Steps::default(); 11];
     let mut previous: Option<Sample> = None;
 
     for step in -span..=span {

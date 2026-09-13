@@ -218,7 +218,7 @@ pub struct View {
     pub rows: u32,
     /// Hex radius in pixels.
     pub hex_radius: f32,
-    /// The scalar layer to draw.
+    /// The layer to draw.
     pub layer: Layer,
 }
 

@@ -15,12 +15,17 @@
 //! because both it and `relief` reach the field composition through the private
 //! [`Generator::elevation_scalar`] rather than through each other. See
 //! `DESIGN.md` section 18.
+//!
+//! Phase 5 adds climate, through the private [`Generator::climate_scalars`] for
+//! the same reason: [`Generator::sample`] and [`Generator::tile`] both need the
+//! temperature and moisture composites, and one private function is what keeps
+//! them from becoming two.
 
 use crate::field::Fields;
 use crate::relief;
 use crate::{
-    Climate, Config, ConfigError, Coord, DIRECTION_COUNT, Elevation, HeatBand, MoistureBand,
-    RegionParams, Seed, Terrain, Tile, Vec2, elevation, region,
+    Config, ConfigError, Coord, DIRECTION_COUNT, Elevation, RegionParams, Seed, Terrain, Tile,
+    Vec2, climate, elevation, region,
 };
 
 /// The continuous scalar fields at one coordinate.
@@ -102,6 +107,21 @@ pub struct Sample {
     /// ridge structure, and the contrast shaping included — and it is what sea
     /// level and the band ladder are compared against.
     pub elevation: f64,
+
+    /// The temperature scalar of `DESIGN.md` section 16, in `[-1, +1]`.
+    ///
+    /// Bit-identical to [`crate::Tile::heat_value`] at the same coordinate, and
+    /// the value [`crate::Climate::heat`] is classified from. Elevation cooling
+    /// is already folded in, which is why a mountain range shows on this layer
+    /// as well as on the elevation one.
+    pub heat: f64,
+
+    /// The moisture scalar of `DESIGN.md` section 16, in `[-1, +1]`.
+    ///
+    /// Bit-identical to [`crate::Tile::moisture_value`] at the same coordinate.
+    /// It does not read elevation at all, so a mountain range that is visible
+    /// here is a coincidence of the fields rather than a coupling.
+    pub moisture: f64,
 }
 
 /// An immutable, thread-safe world generator.
@@ -177,6 +197,8 @@ impl Generator {
     #[must_use]
     pub fn sample(&self, coord: Coord) -> Sample {
         let inputs = elevation::inputs(&self.fields, self.seed, &self.config, coord);
+        let elevation = elevation::scalar(&self.config, &inputs);
+        let (heat, moisture) = self.climate_scalars(coord, inputs.world, elevation);
         Sample {
             coord,
             world: inputs.world,
@@ -188,7 +210,9 @@ impl Generator {
             elevation_raw: elevation::raw_composite(&self.config, &inputs),
             regional_uplift: inputs.uplift,
             roughness: inputs.roughness,
-            elevation: elevation::scalar(&self.config, &inputs),
+            elevation,
+            heat,
+            moisture,
         }
     }
 
@@ -229,10 +253,10 @@ impl Generator {
     /// constructor that skips normalization, so there is nothing here to
     /// re-normalize.
     ///
-    /// # Phase 4 completeness
+    /// # Phase 5 completeness
     ///
-    /// Elevation and relief are generated; climate and terrain are provisional
-    /// and are documented as such on [`Tile::climate`] and [`Tile::terrain`].
+    /// Elevation, relief, and climate are generated; terrain is provisional and
+    /// is documented as such on [`Tile::terrain`].
     #[must_use]
     pub fn tile(&self, coord: Coord) -> Tile {
         let elevation_value = self.elevation_scalar(coord);
@@ -242,18 +266,17 @@ impl Generator {
             self.config.relief_reference_delta_per_hex,
         );
         let band = elevation::classify(&self.config, elevation_value);
+        let (heat_value, moisture_value) =
+            self.climate_scalars(coord, crate::axial_to_world(coord), elevation_value);
 
         Tile {
             coord,
             elevation_value,
-            heat_value: 0.0,
-            moisture_value: 0.0,
+            heat_value,
+            moisture_value,
             relief_value,
             elevation: band,
-            climate: Climate {
-                heat: HeatBand::Temperate,
-                moisture: MoistureBand::Moderate,
-            },
+            climate: climate::classify(&self.config, heat_value, moisture_value),
             terrain: provisional_terrain(band),
         }
     }
@@ -326,6 +349,25 @@ impl Generator {
     #[must_use]
     pub fn region_params(&self, coord: Coord) -> RegionParams {
         region::params(self.seed, &self.config, coord)
+    }
+
+    /// The temperature and moisture scalars at one canonical coordinate.
+    ///
+    /// Private and paired for the same reason [`Generator::elevation_scalar`]
+    /// is single: `sample` and `tile` are two doors into one function, and two
+    /// doors into two copies of a composition is how they drift apart. The
+    /// pairing also means the region anchors are walked once for both axes
+    /// rather than once each.
+    ///
+    /// `world` and `elevation` are the caller's, because both callers have
+    /// already computed them and recomputing would only create a second place
+    /// they could disagree.
+    fn climate_scalars(&self, coord: Coord, world: Vec2, elevation: f64) -> (f64, f64) {
+        let inputs = climate::inputs(&self.fields, self.seed, &self.config, coord, world);
+        (
+            climate::heat(&self.config, &inputs, elevation),
+            climate::moisture(&self.config, &inputs),
+        )
     }
 
     /// The elevation scalar. The one place elevation is composed.
@@ -657,17 +699,54 @@ mod tests {
     }
 
     #[test]
-    fn the_climate_placeholder_is_the_middle_of_both_axes() {
-        // Documented on `Tile::climate` as provisional. A test so that phase 5
-        // has to delete it rather than quietly leave half the world temperate.
-        let g = Generator::with_defaults(1);
+    fn every_public_route_to_climate_gives_the_same_bits() {
+        // `sample` and `tile` are two doors into `climate_scalars`, and the
+        // tile's bands must be the classification of the tile's own numbers
+        // rather than of a second evaluation that happened to agree.
+        let g = Generator::with_defaults(0x7777_8888);
         for c in sample_coords() {
+            let sample = g.sample(c);
             let tile = g.tile(c);
-            assert_eq!(tile.climate.heat, HeatBand::Temperate);
-            assert_eq!(tile.climate.moisture, MoistureBand::Moderate);
-            assert_eq!(tile.heat_value, 0.0);
-            assert_eq!(tile.moisture_value, 0.0);
+            assert_eq!(tile.heat_value.to_bits(), sample.heat.to_bits(), "{c:?}");
+            assert_eq!(
+                tile.moisture_value.to_bits(),
+                sample.moisture.to_bits(),
+                "{c:?}"
+            );
+            assert_eq!(
+                tile.climate,
+                crate::climate::classify(g.config(), tile.heat_value, tile.moisture_value),
+                "{c:?}"
+            );
         }
+    }
+
+    #[test]
+    fn the_world_is_not_uniformly_temperate() {
+        // The placeholder this replaces asserted the opposite: before phase 5
+        // every tile reported the middle of both axes. A world that had
+        // silently gone back to one climate would still pass every bit-exact
+        // test above, so the variety is asserted here rather than inferred.
+        let g = Generator::with_defaults(1);
+        let mut heat = Vec::new();
+        let mut moisture = Vec::new();
+        for q in -30..=30_i64 {
+            for r in -30..=30_i64 {
+                let tile = g.tile(Coord::new(q * 211, r * 197));
+                if !heat.contains(&tile.climate.heat) {
+                    heat.push(tile.climate.heat);
+                }
+                if !moisture.contains(&tile.climate.moisture) {
+                    moisture.push(tile.climate.moisture);
+                }
+            }
+        }
+        assert_eq!(heat.len(), 5, "only {heat:?} of the heat bands occur");
+        assert_eq!(
+            moisture.len(),
+            5,
+            "only {moisture:?} of the moisture bands occur"
+        );
     }
 
     #[test]

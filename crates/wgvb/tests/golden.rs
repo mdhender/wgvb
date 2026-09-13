@@ -1,6 +1,6 @@
-//! Golden coordinates for algorithm version 3.
+//! Golden coordinates for algorithm version 4.
 //!
-//! `DESIGN.md` sections 25.7, 27, 30.9, and the issue for phase 4.
+//! `DESIGN.md` sections 25.7, 27, 30.9, and the issues for phases 4 and 5.
 //!
 //! # What this file is
 //!
@@ -11,7 +11,17 @@
 //! is either a deliberate algorithm compatibility decision recorded in the
 //! commit message, or a bug.
 //!
-//! # Compatibility decision
+//! # Compatibility decision — version 4
+//!
+//! Phase 5 added two columns, `heat` and `moisture`, and **moved nothing**.
+//! Every value the table already held is bit-for-bit what version 3 recorded:
+//! climate reads the elevation scalar but does not feed it, and the two climate
+//! fields are new nodes in the field graph rather than changes to existing ones.
+//! `ALGORITHM_VERSION` was bumped all the same, because [`wgvb::Config`] gained
+//! the climate settings and a world file written under version 3 does not carry
+//! them — see the history note on that constant.
+//!
+//! # Compatibility decision — version 3
 //!
 //! **This table was re-recorded for `ALGORITHM_VERSION = 3`, and the version was
 //! bumped in the same commit.**
@@ -68,7 +78,7 @@
 //! Never build a target under comparison with `-C target-cpu=native` or any
 //! flag that relaxes floating-point semantics (section 25.7).
 
-use wgvb::{Coord, Generator};
+use wgvb::{Coord, Generator, HeatBand, MoistureBand};
 
 /// The seed the table was recorded with. Changing it invalidates the table.
 const GOLDEN_SEED: u64 = 0x0123_4567_89ab_cdef;
@@ -76,8 +86,10 @@ const GOLDEN_SEED: u64 = 0x0123_4567_89ab_cdef;
 /// The scalar names, in the order the golden table stores them.
 ///
 /// Every scalar the public API exposes at one coordinate, so a new field that
-/// is not added here is visibly missing rather than quietly unpinned.
-const NAMES: [&str; 10] = [
+/// is not added here is visibly missing rather than quietly unpinned. `heat`
+/// and `moisture` are the two phase 5 added; the ten before them are exactly
+/// the values, in exactly the order, that version 3 recorded.
+const NAMES: [&str; 12] = [
     "continentalness",
     "regional",
     "local",
@@ -88,6 +100,8 @@ const NAMES: [&str; 10] = [
     "roughness",
     "elevation",
     "relief",
+    "heat",
+    "moisture",
 ];
 
 /// `(q, r)` paired with the bit patterns of the scalars named in [`NAMES`].
@@ -98,28 +112,28 @@ const NAMES: [&str; 10] = [
 /// appear where the operands are largest.
 #[rustfmt::skip]
 const GOLDEN: [((i64, i64), [u64; NAMES.len()]); 22] = [
-    ((0, 0), [0x3fa5b0402bbc41d9, 0xbfc7b08f83c88d02, 0x3fd73a1e9eba1a86, 0x3fc1d8b06b63dd13, 0x3fe8fa01501d59f5, 0x3f7e3e7ecfc993d3, 0xbfd1f732738c4ab9, 0xbfd8d1b0fbe4ccb8, 0xbfd50203836cc654, 0x3fce7e5ccbf059ad]),
-    ((1, 0), [0x3fa93a45c5bbf814, 0xbfc4c43a31c1c7e9, 0x3fd2bf426d80f84f, 0xbf9500d175803ec0, 0x3fe8ea865b13cf28, 0x3f7a043b920ecd39, 0xbfd1f713b20b3b3f, 0xbfd8d1d5e749eb40, 0xbfd4e9c08c42c2e0, 0x3fd6b7e5f883cc54]),
-    ((1, -1), [0x3fa4e9852de7fb36, 0xbfc65bde3bf43e94, 0x3fd2e5fbb13c01da, 0xbfb71bb978827e3d, 0x3feb1940d5c94160, 0xbf723f73ffba6085, 0xbfd1f6f283b2d7b2, 0xbfd8d1895e986625, 0xbfd598bdf135d2ee, 0x3fd4abed6238a536]),
-    ((0, -1), [0x3fa168c3bdb3cfab, 0xbfc8e3a7a13cf33f, 0x3fd16096eab4a4b1, 0x3fbd615323786aed, 0x3feadfd6715cb4fa, 0xbf82b1368dd36e87, 0xbfd1f6ed6401dd9f, 0xbfd8d14cdccb6d5f, 0xbfd601341748bab6, 0x3fd05c68ad61cb29]),
-    ((-1, 0), [0x3fa24583f148cfe3, 0xbfc9e2d65786c742, 0x3fd95692bb04f105, 0x3fc6b5fe0c45ea8d, 0x3fe8c8b8b25a1400, 0x3f660aeaeb0ae69e, 0xbfd1f6c3eb9c9dad, 0xbfd8d19735a749b8, 0xbfd593ddc3adec1e, 0x3fcea05be9faccac]),
-    ((-1, 1), [0x3fa6892b15f6ca7d, 0xbfc8ad2cbb82bb47, 0x3fe201f54ebb4612, 0x3fc09e8c2d8153c5, 0x3fe782551f73c9e4, 0x3f97d90a7b4042dc, 0xbfd1f6c923a4247f, 0xbfd8d16ed0ed2e48, 0xbfd44e75ae447f09, 0x3fd504acd4c3b3a3]),
-    ((0, 1), [0x3fa9fc5ef75254b7, 0xbfc60812439b8d42, 0x3fd91f12b0666192, 0x3fc1a1e45787c0ad, 0x3fe73f4a77967606, 0x3f931086b8b1b6bf, 0xbfd1f6fa4f53094d, 0xbfd8d18dd31ba471, 0xbfd44cd61d034191, 0x3fd166e197384286]),
-    ((-1, -1), [0x3f9c074cd91c6f8e, 0xbfca8548e22ff9f7, 0x3fd2f1cab22ef647, 0x3fcec699ae0ad57f, 0x3fe9fd1fc8b60965, 0xbf84d60c08c501bf, 0xbfd1f67c21f38a99, 0xbfd8d1311737c6d0, 0xbfd65005af14aebe, 0x3fc9586852e2e6d0]),
-    ((7, -3), [0x3fb1bbfe7f347c80, 0xbfa2893ea64cb1eb, 0xbfc67378c5a103cf, 0xbfe344624ce2c52f, 0x3fee520aa663544e, 0xbf7afa39d61df4e0, 0xbfd1f2a10a009463, 0xbfd8d2b34a0ac867, 0xbfd3eaceac8a22d5, 0x3fe53659bf843cd4]),
-    ((-97, 411), [0x3fd787723cb7bf9b, 0xbfc0ddde5a524848, 0x3fdd4d3856550f54, 0xbfdac8e7c156eddc, 0x3fe90606144f27d5, 0x3fc9d93fb66adae8, 0x3fda48de8edf864d, 0xbfda2797ebd9c9e0, 0x3fcc8b9ce4633fbe, 0x3fd0b50301b485a8]),
-    ((1000, 1000), [0xbfca7a38fe986ae3, 0xbfd4bbba576d4ee0, 0x3fe0f7edfc3a66dc, 0xbfd52b9b41a7c30d, 0x3fe495ad394c9020, 0xbfc723f1db6ae8f1, 0xbfceba195163d17d, 0xbfebdc7ee482d6ac, 0xbfe40fbca79f0d71, 0x3fd49bf28aea9895]),
-    ((-1000, -1000), [0x3fd5db19bd98f9ca, 0x3fde6c143f964405, 0x3fde661d164a5c73, 0xbfe11d1e33a6328d, 0x3fe653b9d449166a, 0x3fd724663f6ccb76, 0x3fe390eedf4c6313, 0xbfd2bdda9c0f2455, 0x3fe0c95c61ccea35, 0x3fd54b199261560d]),
-    ((12345, -6789), [0xbfc24e9b7e7bdb72, 0xbfd89649decc499b, 0x3fd2712b48f40e53, 0xbfcd028e0c0bbf70, 0x3fefa0cc29a45b29, 0xbfc6dde1d6569d9d, 0xbfb673119ae3bf01, 0xbfd4fc0d59b29503, 0xbfe0002ff4fde014, 0x3fdbd3cf5b2f4ff1]),
-    ((-12345, 6789), [0x3fe1528705057ed6, 0x3fe0259fd04953da, 0x3fd8f0564e7e9bf6, 0xbfc8986eff84a2ac, 0x3fefc321a08366ec, 0x3fdf7578c3f3b9c1, 0x3fe38f9c4d84c69a, 0xbfe0f881d1a6c30b, 0x3fe5a60ec5143dbe, 0x3fc31c8ae27e68b8]),
-    ((32767, 0), [0x3fdcc7d2f1de9aad, 0xbfa6b5215fdd73d1, 0x3fc504440e49071f, 0xbfa053964393042b, 0x3fe8dfcc49b36a55, 0x3fd0d9d88925cfc7, 0x3febf209376f9dc0, 0x3fc4c1cc515ec6cb, 0x3fe12c41870b3b42, 0x3ff0000000000000]),
-    ((0, 32767), [0xbfd4ae8650418a43, 0xbfb8fe482eb3405b, 0xbf90d6822e288f6f, 0x3fda916e37964f88, 0x3fef6d79574e60e1, 0xbfca29d19e4e295b, 0x3fe3047690bc3e99, 0xbfb5aa77db75285d, 0xbfd1090c182d3362, 0x3ff0000000000000]),
-    ((-32767, 0), [0x3fd6ba2d32e74a64, 0x3fe632e57a7bf94c, 0xbfc2592576966f0b, 0x3f67ca851f07ed55, 0x3feae127900a795a, 0x3fd9796d92b4e167, 0x3fcd4a597c628ec5, 0xbfe718af44354139, 0x3fdcb0330c2c41ea, 0x3ff0000000000000]),
-    ((0, -32767), [0xbfbb9ee06efda31f, 0x3fadbdea0f7b8529, 0xbfde3dd88c01860d, 0x3fda79af6ecb4eb3, 0x3fe4013c05fd60a8, 0xbfb2b30da694ad4c, 0xbfba70aefe47cd9b, 0x3fe750a6249095c0, 0xbfd257afee14b95b, 0x3ff0000000000000]),
-    ((32767, -32767), [0xbfddad1618474cfa, 0x3fe09f867c6a590b, 0xbfdf07700cc59342, 0xbfc1429088bcb85c, 0x3fe35047bdc0450e, 0xbfc550e1a0e3d94d, 0x3fd272d8382eae36, 0xbfe05f2837ea0c51, 0xbfd7cd8f01b76e8e, 0x3ff0000000000000]),
-    ((-32767, 32767), [0xbfbdb368be176591, 0xbfcb708d13506c56, 0x3fd9613040524719, 0x3fe78c8fe9af2681, 0x3fea6d5cb4c55212, 0xbfb1e66b62ab4f83, 0xbfb5c8f1c3380bd8, 0x3fde7d17bedda511, 0xbfd1294d7c368b3e, 0x3ff0000000000000]),
-    ((10922, -4681), [0x3fd43cc03c6cde54, 0x3fd105e058588140, 0x3fa3d16cbafa0193, 0xbfb2fc6dc8a24c75, 0x3fedd06b05cf7771, 0x3fd0dce7f41a1d0d, 0xbfdb1afc96a3b248, 0xbfe5c4ac6e8f703d, 0x3f834c68159dfb4a, 0x3fc78d9da75014da]),
-    ((-6553, 2978), [0xbfb1b86c12a42872, 0x3fc03fdb0c7fdadc, 0xbfbbd9acb236b31d, 0x3fbf3de740abb02b, 0x3fe51cc76c60c5a4, 0xbf81a7f833ce70da, 0xbfcb6aaf58588594, 0xbfd6e6eeaa960a75, 0xbfd42467b3d9187f, 0x3fd00a74597498d4]),
+    ((0, 0), [0x3fa5b0402bbc41d9, 0xbfc7b08f83c88d02, 0x3fd73a1e9eba1a86, 0x3fc1d8b06b63dd13, 0x3fe8fa01501d59f5, 0x3f7e3e7ecfc993d3, 0xbfd1f732738c4ab9, 0xbfd8d1b0fbe4ccb8, 0xbfd50203836cc654, 0x3fce7e5ccbf059ad, 0x3fd55a0d969b91f7, 0xbfd6b1df9dc2760e]),
+    ((1, 0), [0x3fa93a45c5bbf814, 0xbfc4c43a31c1c7e9, 0x3fd2bf426d80f84f, 0xbf9500d175803ec0, 0x3fe8ea865b13cf28, 0x3f7a043b920ecd39, 0xbfd1f713b20b3b3f, 0xbfd8d1d5e749eb40, 0xbfd4e9c08c42c2e0, 0x3fd6b7e5f883cc54, 0x3fd53df5a0c09aa7, 0xbfd71993e3340a19]),
+    ((1, -1), [0x3fa4e9852de7fb36, 0xbfc65bde3bf43e94, 0x3fd2e5fbb13c01da, 0xbfb71bb978827e3d, 0x3feb1940d5c94160, 0xbf723f73ffba6085, 0xbfd1f6f283b2d7b2, 0xbfd8d1895e986625, 0xbfd598bdf135d2ee, 0x3fd4abed6238a536, 0x3fd5487055061025, 0xbfd6b7824b085640]),
+    ((0, -1), [0x3fa168c3bdb3cfab, 0xbfc8e3a7a13cf33f, 0x3fd16096eab4a4b1, 0x3fbd615323786aed, 0x3feadfd6715cb4fa, 0xbf82b1368dd36e87, 0xbfd1f6ed6401dd9f, 0xbfd8d14cdccb6d5f, 0xbfd601341748bab6, 0x3fd05c68ad61cb29, 0x3fd564bb26f6eb4d, 0xbfd65e0c09cbc230]),
+    ((-1, 0), [0x3fa24583f148cfe3, 0xbfc9e2d65786c742, 0x3fd95692bb04f105, 0x3fc6b5fe0c45ea8d, 0x3fe8c8b8b25a1400, 0x3f660aeaeb0ae69e, 0xbfd1f6c3eb9c9dad, 0xbfd8d19735a749b8, 0xbfd593ddc3adec1e, 0x3fcea05be9faccac, 0x3fd57653a46bad5f, 0xbfd65124c17ff047]),
+    ((-1, 1), [0x3fa6892b15f6ca7d, 0xbfc8ad2cbb82bb47, 0x3fe201f54ebb4612, 0x3fc09e8c2d8153c5, 0x3fe782551f73c9e4, 0x3f97d90a7b4042dc, 0xbfd1f6c923a4247f, 0xbfd8d16ed0ed2e48, 0xbfd44e75ae447f09, 0x3fd504acd4c3b3a3, 0x3fd56b961e0f4feb, 0xbfd6a834fad677d0]),
+    ((0, 1), [0x3fa9fc5ef75254b7, 0xbfc60812439b8d42, 0x3fd91f12b0666192, 0x3fc1a1e45787c0ad, 0x3fe73f4a77967606, 0x3f931086b8b1b6bf, 0xbfd1f6fa4f53094d, 0xbfd8d18dd31ba471, 0xbfd44cd61d034191, 0x3fd166e197384286, 0x3fd54f6c1753321a, 0xbfd711b47d415891]),
+    ((-1, -1), [0x3f9c074cd91c6f8e, 0xbfca8548e22ff9f7, 0x3fd2f1cab22ef647, 0x3fcec699ae0ad57f, 0x3fe9fd1fc8b60965, 0xbf84d60c08c501bf, 0xbfd1f67c21f38a99, 0xbfd8d1311737c6d0, 0xbfd65005af14aebe, 0x3fc9586852e2e6d0, 0x3fd58130fe222928, 0xbfd6109c659315e2]),
+    ((7, -3), [0x3fb1bbfe7f347c80, 0xbfa2893ea64cb1eb, 0xbfc67378c5a103cf, 0xbfe344624ce2c52f, 0x3fee520aa663544e, 0xbf7afa39d61df4e0, 0xbfd1f2a10a009463, 0xbfd8d2b34a0ac867, 0xbfd3eaceac8a22d5, 0x3fe53659bf843cd4, 0x3fd4b7d3bce61569, 0xbfd89c58a245f438]),
+    ((-97, 411), [0x3fd787723cb7bf9b, 0xbfc0ddde5a524848, 0x3fdd4d3856550f54, 0xbfdac8e7c156eddc, 0x3fe90606144f27d5, 0x3fc9d93fb66adae8, 0x3fda48de8edf864d, 0xbfda2797ebd9c9e0, 0x3fcc8b9ce4633fbe, 0x3fd0b50301b485a8, 0x3f865cb06eb337c0, 0xbfc98f0b03df8d5e]),
+    ((1000, 1000), [0xbfca7a38fe986ae3, 0xbfd4bbba576d4ee0, 0x3fe0f7edfc3a66dc, 0xbfd52b9b41a7c30d, 0x3fe495ad394c9020, 0xbfc723f1db6ae8f1, 0xbfceba195163d17d, 0xbfebdc7ee482d6ac, 0xbfe40fbca79f0d71, 0x3fd49bf28aea9895, 0xbfc8d1334ded4eff, 0xbfb794ff094ec0c2]),
+    ((-1000, -1000), [0x3fd5db19bd98f9ca, 0x3fde6c143f964405, 0x3fde661d164a5c73, 0xbfe11d1e33a6328d, 0x3fe653b9d449166a, 0x3fd724663f6ccb76, 0x3fe390eedf4c6313, 0xbfd2bdda9c0f2455, 0x3fe0c95c61ccea35, 0x3fd54b199261560d, 0xbfd3527abf4f366e, 0x3fd872ca2fce6415]),
+    ((12345, -6789), [0xbfc24e9b7e7bdb72, 0xbfd89649decc499b, 0x3fd2712b48f40e53, 0xbfcd028e0c0bbf70, 0x3fefa0cc29a45b29, 0xbfc6dde1d6569d9d, 0xbfb673119ae3bf01, 0xbfd4fc0d59b29503, 0xbfe0002ff4fde014, 0x3fdbd3cf5b2f4ff1, 0x3fd8000a5c82ca9d, 0xbfc05c08e2b39771]),
+    ((-12345, 6789), [0x3fe1528705057ed6, 0x3fe0259fd04953da, 0x3fd8f0564e7e9bf6, 0xbfc8986eff84a2ac, 0x3fefc321a08366ec, 0x3fdf7578c3f3b9c1, 0x3fe38f9c4d84c69a, 0xbfe0f881d1a6c30b, 0x3fe5a60ec5143dbe, 0x3fc31c8ae27e68b8, 0xbfe85cc27a848ec0, 0xbfcfb4a633a27458]),
+    ((32767, 0), [0x3fdcc7d2f1de9aad, 0xbfa6b5215fdd73d1, 0x3fc504440e49071f, 0xbfa053964393042b, 0x3fe8dfcc49b36a55, 0x3fd0d9d88925cfc7, 0x3febf209376f9dc0, 0x3fc4c1cc515ec6cb, 0x3fe12c41870b3b42, 0x3ff0000000000000, 0xbfe2c471f0549bcd, 0xbfd0ea68d23a6546]),
+    ((0, 32767), [0xbfd4ae8650418a43, 0xbfb8fe482eb3405b, 0xbf90d6822e288f6f, 0x3fda916e37964f88, 0x3fef6d79574e60e1, 0xbfca29d19e4e295b, 0x3fe3047690bc3e99, 0xbfb5aa77db75285d, 0xbfd1090c182d3362, 0x3ff0000000000000, 0xbfb5ea45a6830cc8, 0xbfb70b3f45b4d92f]),
+    ((-32767, 0), [0x3fd6ba2d32e74a64, 0x3fe632e57a7bf94c, 0xbfc2592576966f0b, 0x3f67ca851f07ed55, 0x3feae127900a795a, 0x3fd9796d92b4e167, 0x3fcd4a597c628ec5, 0xbfe718af44354139, 0x3fdcb0330c2c41ea, 0x3ff0000000000000, 0xbfd7964350588dd9, 0x3f9f063d7215325e]),
+    ((0, -32767), [0xbfbb9ee06efda31f, 0x3fadbdea0f7b8529, 0xbfde3dd88c01860d, 0x3fda79af6ecb4eb3, 0x3fe4013c05fd60a8, 0xbfb2b30da694ad4c, 0xbfba70aefe47cd9b, 0x3fe750a6249095c0, 0xbfd257afee14b95b, 0x3ff0000000000000, 0xbf846cea2ab5e315, 0xbfbf9c83e6fbd749]),
+    ((32767, -32767), [0xbfddad1618474cfa, 0x3fe09f867c6a590b, 0xbfdf07700cc59342, 0xbfc1429088bcb85c, 0x3fe35047bdc0450e, 0xbfc550e1a0e3d94d, 0x3fd272d8382eae36, 0xbfe05f2837ea0c51, 0xbfd7cd8f01b76e8e, 0x3ff0000000000000, 0x3fcd9f638ce5eb8d, 0x3f9f1b7dd8e97f16]),
+    ((-32767, 32767), [0xbfbdb368be176591, 0xbfcb708d13506c56, 0x3fd9613040524719, 0x3fe78c8fe9af2681, 0x3fea6d5cb4c55212, 0xbfb1e66b62ab4f83, 0xbfb5c8f1c3380bd8, 0x3fde7d17bedda511, 0xbfd1294d7c368b3e, 0x3ff0000000000000, 0x3fd2fb5042ddf560, 0x3fc2f684bc5d94c7]),
+    ((10922, -4681), [0x3fd43cc03c6cde54, 0x3fd105e058588140, 0x3fa3d16cbafa0193, 0xbfb2fc6dc8a24c75, 0x3fedd06b05cf7771, 0x3fd0dce7f41a1d0d, 0xbfdb1afc96a3b248, 0xbfe5c4ac6e8f703d, 0x3f834c68159dfb4a, 0x3fc78d9da75014da, 0x3fca804730017c93, 0xbfd1fdb6011c60de]),
+    ((-6553, 2978), [0xbfb1b86c12a42872, 0x3fc03fdb0c7fdadc, 0xbfbbd9acb236b31d, 0x3fbf3de740abb02b, 0x3fe51cc76c60c5a4, 0xbf81a7f833ce70da, 0xbfcb6aaf58588594, 0xbfd6e6eeaa960a75, 0xbfd42467b3d9187f, 0x3fd00a74597498d4, 0xbfb5c9e9993ec55d, 0x3fd24a9b8fef68b7]),
 ];
 
 #[test]
@@ -141,6 +155,8 @@ fn golden_coordinates_are_bit_exact() {
             sample.roughness,
             sample.elevation,
             generator.relief(coord),
+            sample.heat,
+            sample.moisture,
         ];
         for ((name, want), got) in NAMES.into_iter().zip(expected).zip(actual) {
             if want != got.to_bits() {
@@ -248,5 +264,47 @@ fn every_golden_value_is_a_normalized_finite_number() {
                 assert!((0.0..=1.0).contains(&value), "({q}, {r}) relief is {value}");
             }
         }
+    }
+}
+
+#[test]
+fn the_climate_columns_are_classified_by_the_tile_api() {
+    // The bands a tile reports must be the classification of the two numbers
+    // this table pins, not of a second evaluation. Pinning the scalars without
+    // this would leave the ladders free to drift under them.
+    let generator = Generator::with_defaults(GOLDEN_SEED);
+    let config = generator.config();
+    let heat_index = NAMES.iter().position(|n| *n == "heat").unwrap();
+    let moisture_index = NAMES.iter().position(|n| *n == "moisture").unwrap();
+
+    for ((q, r), expected) in GOLDEN {
+        let tile = generator.tile(Coord::new(q, r));
+        let heat = f64::from_bits(expected[heat_index]);
+        let moisture = f64::from_bits(expected[moisture_index]);
+        assert_eq!(tile.heat_value.to_bits(), heat.to_bits(), "({q}, {r})");
+        assert_eq!(
+            tile.moisture_value.to_bits(),
+            moisture.to_bits(),
+            "({q}, {r})"
+        );
+
+        // The ladders, written out rather than called, so this is a check on
+        // the classifier and not a restatement of it.
+        let expected_heat = match heat {
+            h if h <= config.polar_level => HeatBand::Polar,
+            h if h <= config.cold_level => HeatBand::Cold,
+            h if h <= config.temperate_level => HeatBand::Temperate,
+            h if h <= config.warm_level => HeatBand::Warm,
+            _ => HeatBand::Hot,
+        };
+        let expected_moisture = match moisture {
+            m if m <= config.arid_level => MoistureBand::Arid,
+            m if m <= config.dry_level => MoistureBand::Dry,
+            m if m <= config.moderate_level => MoistureBand::Moderate,
+            m if m <= config.humid_level => MoistureBand::Humid,
+            _ => MoistureBand::Saturated,
+        };
+        assert_eq!(tile.climate.heat, expected_heat, "({q}, {r})");
+        assert_eq!(tile.climate.moisture, expected_moisture, "({q}, {r})");
     }
 }

@@ -498,6 +498,53 @@ pub(crate) fn elevation_inputs(seed: Seed, config: &Config, coord: Coord) -> Ele
     }
 }
 
+/// The two region parameters the climate composite consumes.
+///
+/// A narrowing of [`params`] in exactly the sense [`elevation_inputs`] is, and
+/// for a weaker version of the same reason: climate is evaluated once per tile
+/// rather than seven times, so the saving is smaller, but the ridge
+/// orientation's rejection-sampling loop per anchor per level is the expensive
+/// part of [`params`] and climate has no use for it at all.
+///
+/// Each quantity accumulates with the same operations in the same order as in
+/// [`params`], so the two agree bit for bit. A test asserts that, because it is
+/// a claim that decays silently if either function is edited alone.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ClimateInputs {
+    pub(crate) moisture_bias: f64,
+    pub(crate) heat_bias: f64,
+}
+
+pub(crate) fn climate_inputs(seed: Seed, config: &Config, coord: Coord) -> ClimateInputs {
+    let mut moisture_bias = 0.0_f64;
+    let mut heat_bias = 0.0_f64;
+    let mut weight = 0.0_f64;
+
+    // Coarse to fine, always. Section 25.3.
+    for level in LEVELS {
+        let influence = level.influence(config);
+        let (anchors, weights) = anchors_and_weights(coord, level.size_hexes(config));
+
+        for (param, total) in [
+            (Param::MoistureBias, &mut moisture_bias),
+            (Param::HeatBias, &mut heat_bias),
+        ] {
+            let mut blended = 0.0_f64;
+            for (anchor_weight, anchor) in weights.into_iter().zip(anchors) {
+                blended += anchor_weight * anchor_scalar(seed, level, anchor, param);
+            }
+            *total += influence * blended;
+        }
+
+        weight += influence;
+    }
+
+    ClimateInputs {
+        moisture_bias: normalize(moisture_bias, weight),
+        heat_bias: normalize(heat_bias, weight),
+    }
+}
+
 /// Every region parameter at one coordinate.
 ///
 /// A pure function of the seed, the coordinate, [`crate::ALGORITHM_VERSION`],
@@ -617,6 +664,39 @@ mod tests {
             cube = (-cube.2, -cube.0, -cube.1);
         }
         out
+    }
+
+    #[test]
+    fn the_narrowed_climate_path_agrees_with_the_full_one_bit_for_bit() {
+        // The same guarantee `elevation_inputs` needs, for the same reason: a
+        // narrowing that computes anything differently is a second world.
+        let config = config();
+        for coord in sample_coords() {
+            let full = params(SEED, &config, coord);
+            let narrow = climate_inputs(SEED, &config, coord);
+            assert_eq!(
+                narrow.moisture_bias.to_bits(),
+                full.moisture_bias.to_bits(),
+                "{coord:?}"
+            );
+            assert_eq!(
+                narrow.heat_bias.to_bits(),
+                full.heat_bias.to_bits(),
+                "{coord:?}"
+            );
+            // And against the one-parameter reference, so a matching pair of
+            // wrong implementations would still be caught.
+            assert_eq!(
+                narrow.moisture_bias.to_bits(),
+                scalar(SEED, &config, coord, Param::MoistureBias).to_bits(),
+                "{coord:?}"
+            );
+            assert_eq!(
+                narrow.heat_bias.to_bits(),
+                scalar(SEED, &config, coord, Param::HeatBias).to_bits(),
+                "{coord:?}"
+            );
+        }
     }
 
     #[test]

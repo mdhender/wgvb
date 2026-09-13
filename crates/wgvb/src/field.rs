@@ -260,14 +260,31 @@ pub(crate) struct Fields {
     pub(crate) ridge: Field,
     pub(crate) local: Field,
     pub(crate) detail: Field,
+
+    /// The broad heat field of `DESIGN.md` section 16.
+    ///
+    /// Warped with the same low-frequency warp as the geographic scales, so a
+    /// climate zone bends where the continent under it bends instead of cutting
+    /// a straight edge across a coastline.
+    pub(crate) heat: Field,
+    /// The broad moisture field.
+    pub(crate) moisture: Field,
+    /// The local variation term of the moisture composite.
+    ///
+    /// Broken up by the same high-frequency warp as hill relief rather than by
+    /// the geographic one: this is the scale at which a patch of marsh sits
+    /// next to a dry slope, and a warp longer than the field itself would only
+    /// translate the whole patch.
+    pub(crate) moisture_variation: Field,
 }
 
 impl Fields {
     /// Composes the graph. Called once, from `Generator::new`.
     pub(crate) fn build(seed: crate::Seed, config: &crate::Config) -> Fields {
         use crate::hash::{
-            DOM_CONTINENTALNESS, DOM_DETAIL_WARP_X, DOM_DETAIL_WARP_Y, DOM_REGIONAL_ELEVATION,
-            DOM_RELIEF, DOM_RIDGE_STRUCTURE, DOM_TERRAIN_DETAIL, DOM_WARP_X, DOM_WARP_Y,
+            DOM_CONTINENTALNESS, DOM_DETAIL_WARP_X, DOM_DETAIL_WARP_Y, DOM_MOISTURE,
+            DOM_MOISTURE_VARIATION, DOM_REGIONAL_ELEVATION, DOM_RELIEF, DOM_RIDGE_STRUCTURE,
+            DOM_TEMPERATURE, DOM_TERRAIN_DETAIL, DOM_WARP_X, DOM_WARP_Y,
         };
 
         // Every ladder of noise, in one shape: an fbm over one leaf, translated
@@ -356,6 +373,21 @@ impl Fields {
                 config.detail_wavelength_miles,
                 config.detail_octaves,
             ),
+            heat: warp(simplex_ladder(
+                DOM_TEMPERATURE,
+                config.heat_wavelength_miles,
+                config.heat_octaves,
+            )),
+            moisture: warp(simplex_ladder(
+                DOM_MOISTURE,
+                config.moisture_wavelength_miles,
+                config.moisture_octaves,
+            )),
+            moisture_variation: detail_warp(simplex_ladder(
+                DOM_MOISTURE_VARIATION,
+                config.moisture_variation_wavelength_miles,
+                config.moisture_variation_octaves,
+            )),
         }
     }
 }

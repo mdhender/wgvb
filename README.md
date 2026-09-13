@@ -19,7 +19,7 @@ The world is a wrapped hexagonal address space of 3,221,127,169 tiles at a
 
 ## Status
 
-Phases 1 through 3 of `DESIGN.md` section 32 are implemented.
+Phases 1 through 5 of `DESIGN.md` section 32 are implemented.
 
 **Phase 1 — coordinates and hashing.** Canonical wrapped coordinates, the six
 pinned direction vectors and 60-degree rotation, chunk and region addressing,
@@ -47,17 +47,48 @@ Nothing is stored and nothing is cached. The blend follows the triangular anchor
 lattice rather than the parallelogram addressing cell, so distant areas have
 distinct character with no visible lattice — draw `--layer region-influence`
 over a wide window to see it. Regions bias fields; they do not assign terrain,
-and phase 4 decides what the elevation bias is worth.
+and each consuming phase decides what a bias is worth.
+
+**Phase 4 — elevation.** `Generator::tile` returns a `Tile` with a normalized
+elevation, a local relief estimated from the six neighboring elevations, and an
+`Elevation` band. The composite adds region uplift, a ridged structure term
+elongated along the region's ridge orientation, a sea-level offset, and a
+contrast shaping pass, all from configuration. Sea level and the band
+thresholds are thresholds on a globally stable field, never quantiles of a
+generated sample: the elevation of a tile does not depend on which other tiles
+have been generated.
+
+**Phase 5 — climate.** Every tile also carries a normalized heat and moisture
+value and a `Climate` of two independent bands, `HeatBand` and `MoistureBand`.
+Temperature is a broad heat field plus the region's heat bias less a cooling
+proportional to height above sea level; moisture is a broad field, the region's
+moisture bias, and a shorter-wavelength local variation. The two axes stay
+independent — cold and arid are not the same thing, and a cold rainforest has to
+be expressible. The wrapped world has no equator, so the heat zones are
+procedural rather than latitudinal.
+
+```sh
+cargo run --release -p wgvb-map -- \
+    --seed 81985529216486895 --q -600 --r -450 --cols 1201 --rows 901 \
+    --hex-radius 1 --layer climate --out climate.png
+```
 
 Layers available now are `continentalness`, `regional`, `local`, `detail`,
-`elevation-raw`, and `region-influence`. Output is diagnostic: it is driven by
-an in-memory generator and does not represent a saved world, and
-`elevation-raw` is the unshaped multi-scale composite rather than the elevation
-of a `Tile` — the region bias is not folded into it until phase 4.
+`elevation-raw`, `elevation`, `relief`, `ridge`, `roughness`,
+`region-influence`, `temperature`, `moisture`, and `climate`. Output is
+diagnostic: it is driven by an in-memory generator and does not represent a
+saved world, and `elevation-raw` is the unshaped multi-scale composite rather
+than the elevation of a `Tile`.
 
-Terrain classification is not implemented. Elevation is phase 4, climate phase
-5, terrain phase 6, and persistence phase 7; `DESIGN.md` is the specification
-and section 32 has the ordered phase plan.
+Climate is built at a scale a window has to be wide to show — a zone is
+thousands of hexes across — so the contact sheets in `docs/renders/v4` are the
+evidence phase 5 met its exit condition, alongside the measurements in
+`crates/wgvb/tests/climate.rs`.
+
+Terrain classification is not implemented: `Tile::terrain` is still derived from
+the elevation band alone and carries no climate information, which is why there
+is no terrain layer. Terrain is phase 6 and persistence is phase 7; `DESIGN.md`
+is the specification and section 32 has the ordered phase plan.
 
 ## Looking at a seed
 

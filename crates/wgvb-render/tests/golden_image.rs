@@ -28,6 +28,15 @@
 //! blend had collapsed toward per-tile noise. What those rows pin is that the
 //! near-flat value is the recorded one.
 //!
+//! `temperature` and `moisture` are flatter still — a palette step or two
+//! across the window — and `climate` is one solid color, because twenty tiles
+//! is twenty tiles out of a zone two thousand hexes across. That is the phase 5
+//! exit condition holding, not a defect, and a climate row that varied within
+//! this window would be the speckle the phase exists to avoid. A uniform row
+//! pins less than a varied one, and what it does pin is worth having: it fails
+//! if the band thresholds move, if either composite moves enough to cross one,
+//! or if the climate table's entry for this band changes.
+//!
 //! # Recorded for algorithm version 3
 //!
 //! Every row that reads a noise field moved when the composition gained
@@ -65,7 +74,7 @@ const GOLDEN_SIZE: (u32, u32) = (48, 47);
 /// Tile-center colors, in ascending `(col, row)` order — the same order the
 /// renderer walks the viewport in.
 #[rustfmt::skip]
-const GOLDEN: [(Layer, [[u8; 4]; 20]); 10] = [
+const GOLDEN: [(Layer, [[u8; 4]; 20]); 13] = [
     // continentalness
     (Layer::Continentalness, [
         [108, 175, 210, 255], [114, 180, 213, 255], [214, 202, 160, 255], [206, 196, 150, 255],
@@ -145,6 +154,30 @@ const GOLDEN: [(Layer, [[u8; 4]; 20]); 10] = [
         [41, 104, 165, 255], [42, 104, 165, 255], [42, 104, 165, 255], [42, 104, 165, 255],
         [41, 104, 165, 255], [41, 104, 165, 255], [41, 104, 165, 255], [41, 104, 165, 255],
         [41, 103, 164, 255], [41, 103, 164, 255], [41, 104, 165, 255], [41, 104, 165, 255],
+    ]),
+    // temperature
+    (Layer::Temperature, [
+        [125, 124, 70, 255], [125, 124, 70, 255], [125, 124, 70, 255], [125, 124, 70, 255],
+        [125, 124, 70, 255], [125, 124, 70, 255], [125, 124, 70, 255], [125, 124, 70, 255],
+        [125, 124, 70, 255], [125, 124, 70, 255], [124, 124, 70, 255], [124, 124, 70, 255],
+        [125, 124, 70, 255], [124, 124, 70, 255], [124, 124, 70, 255], [124, 124, 70, 255],
+        [124, 124, 70, 255], [124, 124, 70, 255], [124, 124, 70, 255], [124, 125, 70, 255],
+    ]),
+    // moisture
+    (Layer::Moisture, [
+        [35, 94, 156, 255], [35, 93, 156, 255], [35, 93, 155, 255], [34, 92, 155, 255],
+        [35, 93, 156, 255], [35, 93, 155, 255], [34, 92, 155, 255], [34, 92, 154, 255],
+        [34, 92, 155, 255], [34, 92, 154, 255], [34, 91, 153, 255], [33, 90, 153, 255],
+        [34, 92, 154, 255], [34, 91, 154, 255], [33, 90, 153, 255], [33, 90, 152, 255],
+        [33, 91, 153, 255], [33, 90, 152, 255], [32, 89, 152, 255], [32, 88, 151, 255],
+    ]),
+    // climate
+    (Layer::Climate, [
+        [228, 158, 96, 255], [228, 158, 96, 255], [228, 158, 96, 255], [228, 158, 96, 255],
+        [228, 158, 96, 255], [228, 158, 96, 255], [228, 158, 96, 255], [228, 158, 96, 255],
+        [228, 158, 96, 255], [228, 158, 96, 255], [228, 158, 96, 255], [228, 158, 96, 255],
+        [228, 158, 96, 255], [228, 158, 96, 255], [228, 158, 96, 255], [228, 158, 96, 255],
+        [228, 158, 96, 255], [228, 158, 96, 255], [228, 158, 96, 255], [228, 158, 96, 255],
     ]),
 ];
 
