@@ -15,5 +15,14 @@ repository.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 
+# `ciborium` is a dev-dependency only. DESIGN.md section 21.2 makes canonical
+# CBOR the configuration's stable serialization, and section 21.1 requires that
+# an older binary *reject* a world file carrying an unknown field. Proving
+# `deny_unknown_fields` actually fires needs a real format, and this is the
+# format the design chose. It is not a dependency of the library itself: the
+# core crate still ships with exactly `serde` and `thiserror`.
+[dev-dependencies]
+ciborium.workspace = true
+
 [lints]
 workspace = true

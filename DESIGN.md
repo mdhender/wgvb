@@ -341,6 +341,30 @@ When an operation produces a coordinate outside the canonical map, translate it 
 
 All public coordinate operations, neighbor sampling, persistence keys, region lookup, and rendering use the same canonicalizer. Because `Coord` cannot be constructed without it (section 4), this is structural rather than advisory.
 
+The implemented normalizer runs in two stages, because `Coord::new` accepts any
+`i64` pair and stepping one mirror center at a time would need about `1.4e14`
+translations for an input near `i64::MAX`:
+
+1. **Lattice solve.** Mirror centers `0` and `1` generate the wraparound lattice.
+   Inverting that two-vector basis gives the multiples directly; rounding each to
+   the nearest integer leaves a residual within hex distance `2N+1` of the origin.
+2. **Greedy fix-up.** Subtract whichever mirror center most reduces
+   `max(|q|, |r|, |s|)`, in fixed order `0..6`, until none does. The six centers
+   are the Voronoi-relevant vectors of the lattice and the canonical hexagon is an
+   exact fundamental domain of it — `1 + 3N(N+1)` tiles for a lattice of the same
+   index — so every coordinate has exactly one canonical representative, there is
+   no tie to break, and a point no center improves is already canonical.
+
+The already-canonical case short-circuits before either stage, which is the
+overwhelmingly common one.
+
+> **The lattice solve is the one place that widens past `i64`.** Products such as
+> `(2N+1) * q` reach `9.2e18` for `|q|` near `i64::MAX`, at the very top of the
+> `i64` range. The rule in section 4 exists to prevent silent wraparound, so the
+> solve is computed in `i128` and the small residual returns to `i64`. Mirror
+> centers, differences, and every other intermediate stay `i64`. Do not "simplify"
+> the solve back to `i64`.
+
 WGVB should make a best effort to make continuous fields periodic under the mirror translations so terrain joins naturally across wrapped edges. Exact periodicity must not delay the first implementation. If a field cannot be made periodic without disproportionate complexity or loss of quality, the discontinuity is an accepted world-warp seam and must be documented and tested as such.
 
 **Hex geometry dependency.** The core `wgvb` crate does *not* depend on a hex
@@ -1858,6 +1882,11 @@ Every version is pinned once in the workspace root `Cargo.toml` under `[workspac
 
 The core `wgvb` crate depends on exactly two of these: `serde` and `thiserror`.
 Keep it that way.
+
+`ciborium` additionally appears as a `wgvb` **dev**-dependency. Proving that
+section 21.1's `deny_unknown_fields` and no-`serde(default)` rules actually fire
+needs a real serialization format, and this is the format section 21.2 chose. It
+is not a dependency of the library and does not appear in a consumer's graph.
 
 ---
 
