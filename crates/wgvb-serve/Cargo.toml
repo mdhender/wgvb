@@ -1,0 +1,37 @@
+[package]
+name = "wgvb-serve"
+description = "A local web viewer for a WGVB seed, with hex-direction scrolling"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+name = "wgvb_serve"
+path = "src/lib.rs"
+
+[[bin]]
+name = "wgvb-serve"
+path = "src/main.rs"
+
+[dependencies]
+wgvb.workspace = true
+wgvb-render.workspace = true
+clap.workspace = true
+thiserror.workspace = true
+
+# `tiny_http` rather than `axum` and `tokio`. The work this server does is
+# CPU-bound rendering with no IO to overlap, so an async runtime would buy
+# nothing and cost about eighty crates; a blocking server and a fixed worker
+# pool is the shape of the problem. See DESIGN.md appendix B.
+tiny_http.workspace = true
+
+# The binary never decodes an image; the tests do, because section 29 requires
+# rendered output to be compared as decoded RGBA rather than as file bytes.
+[dev-dependencies]
+png.workspace = true
+
+[lints]
+workspace = true

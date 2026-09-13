@@ -59,6 +59,30 @@ Terrain classification is not implemented. Elevation is phase 4, climate phase
 5, terrain phase 6, and persistence phase 7; `DESIGN.md` is the specification
 and section 32 has the ordered phase plan.
 
+## Looking at a seed
+
+`wgvb-map` renders one window to one file, which is right for recording a
+golden image and tedious for exploring. `wgvb-serve` puts the same renderer
+behind a URL:
+
+```sh
+cargo run --release -p wgvb-serve
+# then open http://127.0.0.1:8080/seed/0123456789abcdef
+```
+
+The seed is sixteen hexadecimal digits in the route, the view center is in the
+query string, and six links move the view by whole hexes — `rows / 2` north and
+south, `cols / 2` on the four diagonals, so a step means the same thing at every
+zoom and a step followed by its opposite returns exactly where it started. There
+is no JavaScript and no client-side panning: every state the viewer can be in is
+a URL, so a window worth arguing about is a link somebody can paste into an
+issue.
+
+It binds loopback by default, clamps the window before rendering it, and its
+output is diagnostic in exactly the sense `wgvb-map`'s is — an in-memory
+generator from the seed in the route, not a saved world. See `DESIGN.md`
+section 29.1.
+
 Continuous fields are not yet periodic across the wrapped edges. That is an
 accepted world-warp seam under section 7.1, documented and measured in
 `crates/wgvb/tests/wrap_seam.rs`.
@@ -71,6 +95,7 @@ accepted world-warp seam under section 7.1, documented and measured in
 | `wgvb-store`  | Single-world SQLite persistence.                         |
 | `wgvb-render` | Bounded viewport rendering to PNG.                       |
 | `wgvb-map`    | Diagnostic and player-facing CLI.                        |
+| `wgvb-serve`  | Local web viewer for one seed.                           |
 
 ## Documents
 

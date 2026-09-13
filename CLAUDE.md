@@ -162,6 +162,11 @@ These are the rules most likely to be violated by code that looks correct.
   war, settlements, labels, annotations) and compose at render time.
 - **Golden-compare decoded RGBA buffers, not PNG file bytes.** The `png`
   crate's default filter and compression settings can change between versions.
+- `wgvb-serve` is a front end, not a second renderer. Its window arithmetic is
+  `Viewport::centered_on`; no offset-coordinate arithmetic lives in the server,
+  and a test asserts that its PNG bytes are identical to `wgvb-map`'s for the
+  same window. Scroll steps are counted in tiles, never in pixels. See
+  `DESIGN.md` section 29.1.
 
 ## Public generated data
 
@@ -180,9 +185,11 @@ These are the rules most likely to be violated by code that looks correct.
 ## Workspace
 
 ```text
-wgvb-map  ->  wgvb-render  ->  wgvb
-    |              |
-    +-> wgvb-store ---------->  wgvb
+wgvb-map    ->  wgvb-render  ->  wgvb
+    |               |
+    +-> wgvb-store ----------->  wgvb
+
+wgvb-serve  ->  wgvb-render  ->  wgvb
 ```
 
 - `crates/wgvb` depends on exactly `serde` and `thiserror`. **Do not add a

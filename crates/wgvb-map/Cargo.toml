@@ -22,8 +22,18 @@ clap.workspace = true
 # `wgvb-render` encoded. Section 29 requires that rendered output be compared as
 # decoded RGBA rather than as file bytes, and proving this command actually
 # wrote a readable image needs a decoder.
+#
+# `wgvb-serve` is a dev-dependency, and the arrow points backwards on purpose.
+# Two front ends over one renderer must not be allowed to drift, so one test
+# runs this binary and compares its bytes with the server's `map.png` route.
+# The test has to live here because `CARGO_BIN_EXE_wgvb-map` only exists for
+# this package's own tests. Nothing in `src/` sees it, no cycle exists —
+# `wgvb-serve` does not depend on `wgvb-map` — and it does not appear in a
+# consumer's graph, the same standing `ciborium` has in `wgvb`.
 [dev-dependencies]
 png.workspace = true
+wgvb-render.workspace = true
+wgvb-serve.workspace = true
 
 [lints]
 workspace = true

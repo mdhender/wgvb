@@ -69,6 +69,10 @@ pub enum RenderError {
     HexRadius(f32),
     #[error("image would be {width} x {height} pixels, over the {limit} pixel limit")]
     TooLarge { width: u64, height: u64, limit: u64 },
+    #[error(
+        "a centered viewport needs odd tile counts so that a center cell exists, got {cols} x {rows}"
+    )]
+    EvenViewport { cols: u32, rows: u32 },
     #[error("unknown layer {0:?}")]
     UnknownLayer(String),
     #[error("encoding the image failed")]
@@ -315,10 +319,66 @@ impl Viewport {
         })
     }
 
+    /// Defines a viewport around a center tile rather than around its first
+    /// tile.
+    ///
+    /// [`Viewport::new`] takes the window's *first* tile, which is what the
+    /// renderer needs and not what a viewer asks for: "show me this coordinate"
+    /// names the middle of the window. The conversion is offset-scheme
+    /// arithmetic, so it belongs to the crate that owns the offset scheme — a
+    /// second copy of this living in a front end is how the layout convention
+    /// drifts.
+    ///
+    /// **Both tile counts must be odd**, which is the whole reason this is a
+    /// constructor and not a helper. An even count has no center cell, so the
+    /// conversion would have to round, and a rounded conversion makes a scroll
+    /// step followed by its opposite stop returning to where it started. Odd is
+    /// enforced rather than documented.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RenderError::EmptyViewport`] for a zero tile count,
+    /// [`RenderError::EvenViewport`] for an even one, and whatever
+    /// [`Viewport::new`] rejects otherwise.
+    pub fn centered_on(
+        center: Coord,
+        cols: u32,
+        rows: u32,
+        hex_radius: f32,
+    ) -> Result<Viewport, RenderError> {
+        if cols == 0 || rows == 0 {
+            return Err(RenderError::EmptyViewport { cols, rows });
+        }
+        if cols.is_multiple_of(2) || rows.is_multiple_of(2) {
+            return Err(RenderError::EvenViewport { cols, rows });
+        }
+
+        // The center cell of an odd window, and the offset from the first cell
+        // to it. Subtracting in `i64` and letting `Coord` normalize is what
+        // makes a window centered near a wrapped edge ordinary rather than a
+        // special case.
+        let hex = offset_hex(i32_of(cols / 2), i32_of(rows / 2));
+        let origin = Coord::new(
+            i64::from(center.q()) - i64::from(hex.x),
+            i64::from(center.r()) - i64::from(hex.y),
+        );
+        Viewport::new(origin, cols, rows, hex_radius)
+    }
+
     /// The tile at the viewport's `(0, 0)` offset cell.
     #[must_use]
     pub const fn origin(&self) -> Coord {
         self.origin
+    }
+
+    /// The tile in the exact center cell, when one exists.
+    ///
+    /// `None` for an even tile count in either axis, where there is no center
+    /// cell to name. The inverse of [`Viewport::centered_on`].
+    #[must_use]
+    pub fn center(&self) -> Option<Coord> {
+        (self.cols % 2 == 1 && self.rows % 2 == 1)
+            .then(|| self.coord_at(self.cols / 2, self.rows / 2))
     }
 
     /// Tile counts across and down.
@@ -756,6 +816,90 @@ mod tests {
             Viewport::new(Coord::ORIGIN, 100_000, 100_000, 8.0),
             Err(RenderError::TooLarge { .. })
         ));
+    }
+
+    #[test]
+    fn a_centered_viewport_puts_the_requested_tile_in_the_center_cell() {
+        // Every odd pair the constructor accepts, over a range of centers that
+        // includes both column parities, negative components, and coordinates
+        // far enough out that normalization is doing work.
+        for center in [
+            Coord::new(0, 0),
+            Coord::new(1, 0),
+            Coord::new(-87, 6543),
+            Coord::new(12_345, -20_000),
+            Coord::new(32_767, 0),
+        ] {
+            for cols in [1_u32, 3, 5, 61, 101] {
+                for rows in [1_u32, 3, 5, 45, 99] {
+                    let viewport = Viewport::centered_on(center, cols, rows, 4.0)
+                        .expect("an odd window is accepted");
+                    assert_eq!(
+                        viewport.coord_at(cols / 2, rows / 2),
+                        center,
+                        "{cols} x {rows} centered on ({}, {})",
+                        center.q(),
+                        center.r()
+                    );
+                    assert_eq!(viewport.center(), Some(center));
+                    assert_eq!(viewport.tile_counts(), (cols, rows));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_centered_viewport_rejects_a_window_with_no_center_cell() {
+        assert!(matches!(
+            Viewport::centered_on(Coord::ORIGIN, 60, 45, 8.0),
+            Err(RenderError::EvenViewport { cols: 60, rows: 45 })
+        ));
+        assert!(matches!(
+            Viewport::centered_on(Coord::ORIGIN, 61, 44, 8.0),
+            Err(RenderError::EvenViewport { cols: 61, rows: 44 })
+        ));
+        // Zero is even, but "empty" is the more useful complaint.
+        assert!(matches!(
+            Viewport::centered_on(Coord::ORIGIN, 0, 45, 8.0),
+            Err(RenderError::EmptyViewport { cols: 0, rows: 45 })
+        ));
+        assert!(matches!(
+            Viewport::centered_on(Coord::ORIGIN, 61, 0, 8.0),
+            Err(RenderError::EmptyViewport { cols: 61, rows: 0 })
+        ));
+        // The gates `Viewport::new` owns still fire through this constructor.
+        assert!(matches!(
+            Viewport::centered_on(Coord::ORIGIN, 61, 45, 0.5),
+            Err(RenderError::HexRadius(_))
+        ));
+        assert!(matches!(
+            Viewport::centered_on(Coord::ORIGIN, 100_001, 100_001, 8.0),
+            Err(RenderError::TooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn an_even_window_has_no_center_cell_to_report() {
+        let viewport = Viewport::new(Coord::ORIGIN, 60, 45, 8.0).expect("a valid viewport");
+        assert_eq!(viewport.center(), None);
+        let viewport = Viewport::new(Coord::ORIGIN, 61, 44, 8.0).expect("a valid viewport");
+        assert_eq!(viewport.center(), None);
+    }
+
+    #[test]
+    fn centering_and_reading_the_center_are_inverse() {
+        // The round trip the viewer depends on: a link names a center, the
+        // window drawn from it reports the same center, and the window's first
+        // tile agrees with `coord_at` for every cell.
+        let viewport =
+            Viewport::centered_on(Coord::new(-87, 6543), 61, 45, 10.0).expect("a valid viewport");
+        let rebuilt = Viewport::new(viewport.origin(), 61, 45, 10.0).expect("a valid viewport");
+        assert_eq!(rebuilt.center(), Some(Coord::new(-87, 6543)));
+        for col in 0..61 {
+            for row in 0..45 {
+                assert_eq!(viewport.coord_at(col, row), rebuilt.coord_at(col, row));
+            }
+        }
     }
 
     #[test]

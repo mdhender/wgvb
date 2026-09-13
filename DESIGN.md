@@ -1533,6 +1533,13 @@ wgvb/
                 frame.rs        PlayerFrame; player-relative <-> canonical
         wgvb-map/               diagnostic and player-facing CLI
             src/main.rs
+        wgvb-serve/             local web viewer for one seed
+            src/
+                lib.rs          routes and the pure request-to-response function
+                view.rs         View; the URL is the whole state
+                page.rs         the one HTML page
+                reply.rs        routing, rendering, and the error mapping
+                main.rs
 ```
 
 Rust module privacy is finer-grained than Go's package boundary, so there is no
@@ -1557,10 +1564,19 @@ edit to `crates/wgvb/Cargo.toml` that a reviewer will see.
 Dependencies flow one direction only:
 
 ```text
-wgvb-map  ->  wgvb-render  ->  wgvb
-    |              |
-    +-> wgvb-store ---------->  wgvb
+wgvb-map    ->  wgvb-render  ->  wgvb
+    |               |
+    +-> wgvb-store ----------->  wgvb
+
+wgvb-serve  ->  wgvb-render  ->  wgvb
 ```
+
+`wgvb-serve` is a separate crate rather than a mode of `wgvb-map`. A server
+drags in an HTTP stack, and possibly an async runtime, and the CLI has no use
+for either; keeping them apart keeps `wgvb-map --help` honest and keeps the
+diagnostic CLI buildable without a web server in the tree. **The core crate
+gains nothing from either** — it still depends on exactly `serde` and
+`thiserror`.
 
 ---
 
@@ -1613,6 +1629,101 @@ Rendering notes:
   default filter strategy and compression level can change between versions,
   producing different bytes for identical images. Comparing pixels tests what we
   actually care about.
+
+### 29.1 Web viewer
+
+`wgvb-map` renders one window to one file, so looking at a world means running
+it, opening the PNG, working out the next window's coordinates by hand, and
+running it again. That is fine for recording a golden image and hopeless for
+finding out what a seed looks like, which is the thing the renderer exists for.
+`wgvb-serve` is the same renderer behind three URLs:
+
+```text
+GET /seed/{seed}                        the viewer page, centered on the origin
+GET /seed/{seed}?q=-87&r=6543           the viewer page, centered on (-87, 6543)
+GET /seed/{seed}/map.png?q=..&r=..      the rendered window itself
+```
+
+**This is deliberately not a single-page application.** No client-side panning,
+no canvas, no script needed to move the view; page refresh is fine. Every state
+the viewer can be in is a URL, which also makes "look at this" a link somebody
+can paste into an issue, and makes the round trip testable: the links the page
+emits must parse back to the state that produced them.
+
+`{seed}` is sixteen hexadecimal digits, case-insensitive, with no `0x`, because
+that is how a seed is written everywhere else. Note the spelling disagreement
+this creates with `wgvb-map --seed`, which takes decimal because that is
+`clap`'s default for a `u64`. Teaching the CLI the hex spelling too is worth
+doing and is not done here.
+
+Coordinates in the URL are **canonical**, not player-relative. This viewer has
+no player, a canonical link means the same tile to everybody who opens it, and
+it is the same number `wgvb-map --q --r` takes, so a window moves between the
+two tools without a conversion. A frame-relative viewer would have to say so in
+the URL — `?pq=&pr=` — rather than leaving two readings of the same link.
+
+Defaults, all overridable by query string and all clamped: `q` and `r` at the
+origin, `cols` 61, `rows` 45, `hex-radius` 10 pixels, `layer` `elevation`.
+
+**Odd tile counts matter more than they look.** `Viewport::new` takes the
+window's *first* tile, not its center, so a viewer has to convert; with an even
+count there is no center cell, the conversion has to round, and a rounded
+conversion makes a scroll step that returns to where it started stop returning
+to where it started. The conversion is `Viewport::centered_on`, in
+`wgvb-render`, because it is offset-scheme arithmetic and `wgvb-render` owns the
+offset scheme. It rejects an even count rather than rounding one.
+
+**Scroll distances are whole hexes**, counted in tiles and never in pixels, so
+a step means the same thing at every zoom and a step followed by its opposite
+returns to exactly the coordinate it started from. North and south move
+`rows / 2` hexes; the four diagonals move `cols / 2`. Both are integer division
+of an odd count. The new center is `n` whole steps of a vector from
+`DIRECTIONS`, and there is no offset-coordinate arithmetic in the server at all:
+`Coord::new` normalizes, so scrolling off an edge of the canonical hexagon wraps
+to the opposite edge with no special case. It will look like a seam, because it
+is one — the accepted world-warp seam of section 7.1. The viewer does not
+pretend otherwise.
+
+The six controls are the compass walk of appendix A in the admin frame, which
+the renderer draws without rotation: N is absolute direction 2, and the walk
+clockwise from there *decreases* the index, `2, 1, 0, 5, 4, 3`. When a player
+frame arrives, north becomes absolute direction `k` and the same walk applies.
+No rotation reaches the generator.
+
+Bounded, like everything else that renders, and a server is an easier place to
+forget it than a CLI:
+
+- `cols`, `rows`, and `hex-radius` are clamped before a `Viewport` is built. The
+  clamps are odd numbers, so a clamped request still has a center cell.
+- `RenderError::TooLarge` becomes a 400 with a readable message, never a 500.
+  Nothing a caller can type is the server's fault.
+- A request costs `cols * rows` generator calls, and seven times that for the
+  relief layer. The clamp is the answer, not a cache: section 26 asks for a
+  profile before a cache.
+- **Bind to `127.0.0.1` by default.** This is a diagnostic tool with no
+  authentication and an endpoint whose cost the caller chooses. A `--host` flag
+  exists; the default must not be `0.0.0.0`.
+- The PNG is a pure function of seed, center, window, layer, `ALGORITHM_VERSION`
+  and `RENDER_VERSION`, so it carries a strong `ETag` built from exactly those.
+  That is the validity rule section 26 states for any cached render, and it
+  costs one header. The configuration fingerprint of section 21.2 joins that
+  list the moment a configuration can vary.
+
+The HTTP stack is `tiny_http` and a fixed worker pool rather than `axum` and
+`tokio`. The work is CPU-bound rendering with no IO to overlap, so an async
+runtime would buy nothing and cost about eighty crates against about five.
+
+Same standing as `wgvb-map`: the generator is constructed in memory from the
+seed in the route and the default configuration, so **output is diagnostic and
+does not represent a saved world**, and the page says so. When persistence
+lands, the server takes `--db`, the database supplies the seed, algorithm
+version, and effective configuration, and the seed in the route becomes a check
+against the stored one rather than the source of it.
+
+**The server and the CLI must agree byte for byte.** Two front ends over one
+renderer must not be allowed to drift, and that is one assertion rather than a
+second set of goldens: the existing golden image already pins what the renderer
+draws, and a second copy of it in the server crate would only pin it twice.
 
 ---
 
@@ -2080,6 +2191,7 @@ Every version is pinned once in the workspace root `Cargo.toml` under `[workspac
 | `sqlitemigration` | *none — owned* | ~40-line `user_version` ladder; section 27.4. |
 | `image/png` | `png` | Golden-compare decoded RGBA; section 29. |
 | `flag` | `clap` (derive) | — |
+| `net/http` | `tiny_http` | `wgvb-serve` only; section 29.1. |
 | `math/rand/v2` | `rand` | Non-generation use only; section 8. |
 | `crypto/sha256` | `sha2` | Fingerprint; section 21.2. |
 | `encoding/json` | `ciborium` | Canonical config bytes; section 21.2. |
@@ -2089,6 +2201,13 @@ Every version is pinned once in the workspace root `Cargo.toml` under `[workspac
 
 The core `wgvb` crate depends on exactly two of these: `serde` and `thiserror`.
 Keep it that way.
+
+`wgvb-serve` additionally appears as a `wgvb-map` **dev**-dependency, and that
+arrow points backwards on purpose. Section 29.1 requires the two front ends to
+render identical bytes, and the test that asserts it has to run the real
+`wgvb-map` binary, which only that package's own tests can locate. No cycle
+exists — `wgvb-serve` does not depend on `wgvb-map` — and it does not appear in
+a consumer's graph.
 
 `ciborium` additionally appears as a `wgvb` **dev**-dependency. Proving that
 section 21.1's `deny_unknown_fields` and no-`serde(default)` rules actually fire
