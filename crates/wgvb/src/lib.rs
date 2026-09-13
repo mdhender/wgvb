@@ -28,8 +28,8 @@ pub use coord::{Coord, DIRECTION_COUNT, DIRECTIONS, Vec2, axial_to_world, direct
 pub use field::Field;
 pub use generator::{Generator, Sample};
 pub use hash::{
-    DOM_BASIN, DOM_CONTINENTALNESS, DOM_DETAIL_WARP_X, DOM_DETAIL_WARP_Y, DOM_MOISTURE,
-    DOM_REGION_STYLE, DOM_REGIONAL_ELEVATION, DOM_RELIEF, DOM_RIDGE_ORIENTATION,
+    DOM_BASIN, DOM_CONTINENTALNESS, DOM_DETAIL_WARP_X, DOM_DETAIL_WARP_Y, DOM_FIELD_OFFSET,
+    DOM_MOISTURE, DOM_REGION_STYLE, DOM_REGIONAL_ELEVATION, DOM_RELIEF, DOM_RIDGE_ORIENTATION,
     DOM_RIDGE_STRUCTURE, DOM_TEMPERATURE, DOM_TERRAIN_DETAIL, DOM_VOLCANIC, DOM_WARP_X, DOM_WARP_Y,
     domain, hash_n, hash2, hash3, signed_unit_f64, unit_f64,
 };
@@ -53,7 +53,15 @@ pub use tile::{Climate, Elevation, HeatBand, MoistureBand, Terrain, Tile};
 ///   this a version bump rather than an addition: phase 3 could add region
 ///   influence without one because it left every existing value alone, and this
 ///   change does not.
-pub const ALGORITHM_VERSION: u32 = 2;
+/// - **3** — the noise composition, on two counts that landed together because
+///   either one alone would have forced this bump. The fbm ladder gained a
+///   per-field octave count and a Nyquist bound, which stopped the two shortest
+///   fields running octaves the tile grid cannot carry; and every field graph
+///   gained a seed-derived sampling offset, which stopped the world origin
+///   being a lattice point of every scale at once. The first changes what the
+///   fields contain, the second changes where they are sampled, and both move
+///   every value at every coordinate.
+pub const ALGORITHM_VERSION: u32 = 3;
 
 /// World seed. One seed plus one [`Config`] plus one [`ALGORITHM_VERSION`]
 /// determines every tile.
@@ -82,6 +90,20 @@ pub const WORLD_TILE_COUNT: i64 = 1 + 3 * WORLD_RADIUS * (WORLD_RADIUS + 1);
 /// Apothem of one hex, in miles. Adjacent hex centers are `2 * APOTHEM_MILES`
 /// apart. See `DESIGN.md` section 7.
 pub const APOTHEM_MILES: f64 = 3.0;
+
+/// Shortest wavelength the tile grid can carry, in miles.
+///
+/// Adjacent tile centers are `2 * APOTHEM_MILES` apart, and a sampled grid can
+/// represent nothing shorter than two samples per period — so the limit is
+/// `4 * APOTHEM_MILES`, twelve miles at the alpha scale. A field component
+/// below it cannot be seen as a feature; it aliases into per-tile noise, which
+/// is what [`Config`] validation rejects and what `DESIGN.md` section 33.1
+/// calls the failure mode of independent per-tile classification arriving by
+/// another route.
+///
+/// Derived from [`APOTHEM_MILES`] rather than written as `12.0`, so it follows
+/// the world scale if that ever moves.
+pub const NYQUIST_WAVELENGTH_MILES: f64 = 4.0 * APOTHEM_MILES;
 
 /// `sqrt(3.0)`, written out because it is needed in `const` context.
 ///

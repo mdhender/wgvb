@@ -414,10 +414,16 @@ mod tests {
     #[test]
     fn new_rejects_an_invalid_configuration() {
         let config = Config {
-            fbm_octaves: 0,
+            continental_octaves: 0,
             ..Config::default()
         };
-        assert_eq!(Generator::new(1, config), Err(ConfigError::OctaveCount(0)));
+        assert_eq!(
+            Generator::new(1, config),
+            Err(ConfigError::OctaveCount {
+                field: "continental_octaves",
+                octaves: 0
+            })
+        );
     }
 
     #[test]

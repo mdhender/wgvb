@@ -26,8 +26,18 @@ pub enum ConfigError {
         lo: f64,
         hi: f64,
     },
-    #[error("fbm octaves must be in 1..=16, got {0}")]
-    OctaveCount(u8),
+    #[error("{field} must be in 1..=16, got {octaves}")]
+    OctaveCount { field: &'static str, octaves: u8 },
+    #[error(
+        "{field} = {octaves} puts an octave at {finest_wavelength_miles} miles, \
+         below the {limit_miles}-mile Nyquist wavelength of the tile grid"
+    )]
+    BelowNyquist {
+        field: &'static str,
+        octaves: u8,
+        finest_wavelength_miles: f64,
+        limit_miles: f64,
+    },
     #[error("elevation contrast passes must be in 0..=4, got {0}")]
     PassCount(u8),
     #[error("{field} ({value}) must be greater than {below} ({limit})")]
@@ -126,9 +136,33 @@ pub struct Config {
     /// Magnitude of the high-frequency warp offset.
     pub detail_warp_strength_miles: f64,
 
-    /// Octave count for fbm composition, in `1..=16`.
-    pub fbm_octaves: u8,
+    /// Octave count for the continentalness ladder, in `1..=16`.
+    ///
+    /// One count per field rather than one for all five. The field graph
+    /// already carries the octave count per [`crate::Field::Fbm`] node, so a
+    /// single shared setting was an artificial coupling in one closure, and it
+    /// forced the two shortest fields to run octaves below what the tile grid
+    /// can carry. See [`crate::NYQUIST_WAVELENGTH_MILES`], which
+    /// [`Config::validate`] enforces as a ceiling on every ladder.
+    ///
+    /// Nyquist is a bound, not the mechanism that picks these numbers. Deriving
+    /// each count by truncating at the limit would make it a step function of a
+    /// float — retuning a wavelength by a tenth of a mile would silently flip a
+    /// count and move every value in the world, which is the knife-edge
+    /// threshold section 25.6 warns about.
+    pub continental_octaves: u8,
+    /// Octave count for the regional uplift ladder, in `1..=16`.
+    pub regional_octaves: u8,
+    /// Octave count for the ridge structure ladder, in `1..=16`.
+    pub ridge_octaves: u8,
+    /// Octave count for the hill-scale ladder, in `1..=16`.
+    pub local_octaves: u8,
+    /// Octave count for the finest detail ladder, in `1..=16`.
+    pub detail_octaves: u8,
     /// Frequency multiplier between successive fbm octaves.
+    ///
+    /// Shared by every ladder: lacunarity is shape rather than scale, and
+    /// nothing about the five fields suggests they want different ones.
     pub fbm_lacunarity: f64,
     /// Amplitude multiplier between successive fbm octaves.
     pub fbm_gain: f64,
@@ -243,12 +277,18 @@ impl Default for Config {
 
             // Measured against `tests/elevation.rs` rather than guessed. Sea
             // level stays at zero, where section 14's scale says it is, and
-            // `elevation_offset` is what puts 29 per cent of the world above
+            // `elevation_offset` is what puts 31 per cent of the world above
             // it. The remaining thresholds then give, as a share of the world:
-            // 54 per cent deep water, 17 shallow, 16 lowland, 9 upland, 3
-            // highland, and 1 mountain — a shelf that is a fringe of the ocean
+            // 53 per cent deep water, 16 shallow, 16 lowland, 10 upland, 4
+            // highland, and 2 mountain — a shelf that is a fringe of the ocean
             // rather than half of it, and land bands that fall away with
             // height.
+            //
+            // Re-measured, not re-tuned, when the octave ladder and the
+            // sampling offset changed under algorithm version 3: every share
+            // moved by a point or two and none of them left the bounds the
+            // distribution tests were already asserting, so no threshold
+            // followed.
             deep_water_level: -0.15,
             upland_level: 0.18,
             highland_level: 0.35,
@@ -277,7 +317,25 @@ impl Default for Config {
             detail_warp_wavelength_miles: 120.0,
             detail_warp_strength_miles: 18.0,
 
-            fbm_octaves: 5,
+            // Per field. The finest octave of each ladder, at lacunarity 2:
+            // continental 375 miles, regional 112.5, ridge 30, local 15,
+            // detail 18 — every one of them at or above the twelve-mile
+            // Nyquist wavelength of the tile grid.
+            //
+            // Only the two short fields moved, and they had to: at five octaves
+            // each they ran down to 7.5 and 2.25 miles, which the grid cannot
+            // carry. Those octaves aliased into per-tile speckle instead, and
+            // relief — a first difference between neighbors, which is exactly
+            // the operation that amplifies near-Nyquist content — was the
+            // visible casualty. The three long fields are inside the bound
+            // already and are left alone: widening them would be an
+            // unrequested change to the character of the coarse geography
+            // wearing a correctness fix as a disguise.
+            continental_octaves: 5,
+            regional_octaves: 5,
+            ridge_octaves: 5,
+            local_octaves: 4,
+            detail_octaves: 2,
             fbm_lacunarity: 2.0,
             fbm_gain: 0.5,
 
@@ -295,7 +353,7 @@ impl Default for Config {
             uplift_weight: 0.4,
             ridge_weight: 0.3,
 
-            // Measured, not guessed: the unshaped composite has its 71st
+            // Measured, not guessed: the unshaped composite has its 69th
             // percentile at about +0.13, so sinking the world by that much puts
             // a bit under a third of it above sea level. See
             // `tests/elevation.rs`.
@@ -304,9 +362,20 @@ impl Default for Config {
             elevation_contrast_passes: 2,
 
             // Measured: the mean absolute step between neighbors is about
-            // 0.012 and the steepest ground reaches 0.045, so a reference of
+            // 0.0127 and the steepest ground reaches 0.047, so a reference of
             // 0.04 puts typical ground around a third of the way up the relief
             // scale and leaves the top of it for genuinely steep places.
+            //
+            // Re-measured under algorithm version 3, because dropping the
+            // aliased octaves lowers the neighbor-step distribution that this
+            // value is a reference against — and it turned out not to lower it
+            // much. Those octaves carried a sixteenth and a thirty-second of
+            // their ladder's amplitude, and the fbm normalization hands most of
+            // that back to the octaves that remain, so the mean step moved by
+            // about one per cent and the reference did not have to follow. What
+            // did move is the *shape*: relief now correlates 0.74 with its
+            // neighbor where it correlated 0.70 before, which is the structure
+            // the aliasing was burying.
             relief_reference_delta_per_hex: 0.04,
 
             macro_region_size_hexes: DEFAULT_MACRO_REGION_SIZE_HEXES,
@@ -378,12 +447,20 @@ impl Config {
             self.detail_warp_strength_miles,
         )?;
 
-        if self.fbm_octaves == 0 || self.fbm_octaves > MAX_FBM_OCTAVES {
-            return Err(ConfigError::OctaveCount(self.fbm_octaves));
+        for (field, octaves) in self.octave_ladders().map(|(f, o, _)| (f, o)) {
+            if octaves == 0 || octaves > MAX_FBM_OCTAVES {
+                return Err(ConfigError::OctaveCount { field, octaves });
+            }
         }
         in_range("fbm_lacunarity", self.fbm_lacunarity, 1.0, 4.0)?;
         positive("fbm_gain", self.fbm_gain)?;
         in_range("fbm_gain", self.fbm_gain, 0.0, 1.0)?;
+
+        // Nyquist, after lacunarity is known to be in range: a ladder is only
+        // meaningful once the ratio between its rungs is.
+        for (field, octaves, wavelength_miles) in self.octave_ladders() {
+            self.check_nyquist(field, octaves, wavelength_miles)?;
+        }
 
         positive("continental_weight", self.continental_weight)?;
         positive("regional_weight", self.regional_weight)?;
@@ -409,6 +486,75 @@ impl Config {
         positive("macro_region_influence", self.macro_region_influence)?;
         positive("region_influence", self.region_influence)?;
 
+        Ok(())
+    }
+
+    /// The five fbm ladders, as `(octave count field name, count, base
+    /// wavelength)`.
+    ///
+    /// One list, walked by both octave-count checks, so a sixth ladder cannot
+    /// be added to the configuration and validated by only one of them.
+    fn octave_ladders(&self) -> impl Iterator<Item = (&'static str, u8, f64)> {
+        [
+            (
+                "continental_octaves",
+                self.continental_octaves,
+                self.continental_wavelength_miles,
+            ),
+            (
+                "regional_octaves",
+                self.regional_octaves,
+                self.regional_wavelength_miles,
+            ),
+            (
+                "ridge_octaves",
+                self.ridge_octaves,
+                self.ridge_wavelength_miles,
+            ),
+            (
+                "local_octaves",
+                self.local_octaves,
+                self.local_wavelength_miles,
+            ),
+            (
+                "detail_octaves",
+                self.detail_octaves,
+                self.detail_wavelength_miles,
+            ),
+        ]
+        .into_iter()
+    }
+
+    /// Rejects a ladder that reaches below what the tile grid can carry.
+    ///
+    /// The frequency is walked by repeated multiplication, exactly as the fbm
+    /// loop in `field.rs` walks it, so the check covers the frequencies that
+    /// will actually be sampled rather than a `powf` approximation of them —
+    /// and `powf` is barred from the generation path anyway (section 25.2).
+    ///
+    /// The comparison is `wavelength < limit * frequency` rather than
+    /// `wavelength / frequency < limit`: same test, one operation, and no
+    /// division of a validated scale by a value that a lacunarity of one leaves
+    /// at exactly one.
+    fn check_nyquist(
+        &self,
+        field: &'static str,
+        octaves: u8,
+        wavelength_miles: f64,
+    ) -> Result<(), ConfigError> {
+        let limit = crate::NYQUIST_WAVELENGTH_MILES;
+        let mut frequency = 1.0_f64;
+        for _ in 0..octaves {
+            if wavelength_miles < limit * frequency {
+                return Err(ConfigError::BelowNyquist {
+                    field,
+                    octaves,
+                    finest_wavelength_miles: wavelength_miles / frequency,
+                    limit_miles: limit,
+                });
+            }
+            frequency *= self.fbm_lacunarity;
+        }
         Ok(())
     }
 }
@@ -744,8 +890,17 @@ mod tests {
             );
         }
         for good in [1.0, 2.0, 4.0] {
+            // One octave per ladder, so the accepted range of lacunarity is
+            // what this asserts rather than the Nyquist bound it interacts
+            // with: at four, the default five-octave ladders reach below the
+            // limit, which is a different rejection with its own test.
             let config = Config {
                 fbm_lacunarity: good,
+                continental_octaves: 1,
+                regional_octaves: 1,
+                ridge_octaves: 1,
+                local_octaves: 1,
+                detail_octaves: 1,
                 ..Config::default()
             };
             assert_eq!(config.validate(), Ok(()), "lacunarity {good}");
@@ -772,26 +927,142 @@ mod tests {
         );
     }
 
+    /// A field name paired with a setter for an octave count.
+    type OctaveSetter = (&'static str, fn(&mut Config, u8));
+
+    /// Every octave-count field, paired with a setter, so a sixth ladder cannot
+    /// be added to the configuration and skip these checks unnoticed.
+    fn octave_fields() -> Vec<OctaveSetter> {
+        vec![
+            ("continental_octaves", |c, v| c.continental_octaves = v),
+            ("regional_octaves", |c, v| c.regional_octaves = v),
+            ("ridge_octaves", |c, v| c.ridge_octaves = v),
+            ("local_octaves", |c, v| c.local_octaves = v),
+            ("detail_octaves", |c, v| c.detail_octaves = v),
+        ]
+    }
+
     #[test]
-    fn the_octave_count_is_rejected_outside_one_through_sixteen() {
-        for bad in [0, MAX_FBM_OCTAVES + 1, u8::MAX] {
-            let config = Config {
-                fbm_octaves: bad,
-                ..Config::default()
-            };
-            assert_eq!(
-                config.validate(),
-                Err(ConfigError::OctaveCount(bad)),
-                "{bad} octaves"
+    fn the_octave_count_is_rejected_outside_one_through_sixteen_in_every_ladder() {
+        for (field, set) in octave_fields() {
+            for bad in [0, MAX_FBM_OCTAVES + 1, u8::MAX] {
+                let mut config = Config::default();
+                set(&mut config, bad);
+                assert_eq!(
+                    config.validate(),
+                    Err(ConfigError::OctaveCount {
+                        field,
+                        octaves: bad
+                    }),
+                    "{field} at {bad}"
+                );
+            }
+            // One is always legal: a one-octave ladder is the leaf itself, and
+            // no leaf is below the limit while its wavelength validates.
+            let mut config = Config::default();
+            set(&mut config, 1);
+            assert_eq!(config.validate(), Ok(()), "{field} at one octave");
+        }
+    }
+
+    #[test]
+    fn no_default_octave_falls_below_the_nyquist_wavelength_of_the_tile_grid() {
+        // Tiles are `2 * APOTHEM_MILES` apart, so the shortest feature the grid
+        // can carry is twice that. An octave below it cannot be seen as a
+        // feature; it aliases into per-tile noise and relief is the visible
+        // casualty. Derived from `APOTHEM_MILES` rather than written as 12.0,
+        // so it follows the world scale.
+        let limit = 4.0 * crate::APOTHEM_MILES;
+        assert_eq!(limit, crate::NYQUIST_WAVELENGTH_MILES);
+
+        let config = Config::default();
+        for (field, octaves, wavelength) in config.octave_ladders() {
+            // The ladder walked independently of `check_nyquist`: repeated
+            // division here against its repeated multiplication.
+            let mut finest = wavelength;
+            for _ in 1..octaves {
+                finest /= config.fbm_lacunarity;
+            }
+            assert!(
+                finest >= limit,
+                "{field} = {octaves} reaches {finest} miles, below the {limit}-mile limit"
             );
         }
-        for good in [1, 8, MAX_FBM_OCTAVES] {
-            let config = Config {
-                fbm_octaves: good,
-                ..Config::default()
-            };
-            assert_eq!(config.validate(), Ok(()), "{good} octaves");
-        }
+    }
+
+    #[test]
+    fn a_ladder_that_reaches_below_the_nyquist_wavelength_is_rejected() {
+        // The check exists so that nobody has to *remember* to drop an octave
+        // after shortening a wavelength.
+        let limit = crate::NYQUIST_WAVELENGTH_MILES;
+
+        // One octave past the default on each of the two shortest ladders.
+        let config = Config {
+            detail_octaves: 3,
+            ..Config::default()
+        };
+        assert_eq!(
+            config.validate(),
+            Err(ConfigError::BelowNyquist {
+                field: "detail_octaves",
+                octaves: 3,
+                finest_wavelength_miles: 9.0,
+                limit_miles: limit,
+            })
+        );
+        let config = Config {
+            local_octaves: 5,
+            ..Config::default()
+        };
+        assert_eq!(
+            config.validate(),
+            Err(ConfigError::BelowNyquist {
+                field: "local_octaves",
+                octaves: 5,
+                finest_wavelength_miles: 7.5,
+                limit_miles: limit,
+            })
+        );
+
+        // Shortening a wavelength under an unchanged count fails the same way.
+        let config = Config {
+            detail_wavelength_miles: 18.0,
+            ..Config::default()
+        };
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::BelowNyquist {
+                field: "detail_octaves",
+                ..
+            })
+        ));
+
+        // And so does a wider lacunarity, which shortens every ladder at once:
+        // the first one validation reaches is the one it reports.
+        let config = Config {
+            fbm_lacunarity: 4.0,
+            ..Config::default()
+        };
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::BelowNyquist {
+                field: "regional_octaves",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_ladder_that_stops_exactly_at_the_nyquist_wavelength_is_accepted() {
+        // Exactly at the limit is ugly — two samples per period still beats
+        // against the grid — but it is not undefined, so validation draws the
+        // line at the hard bound and the defaults sit comfortably above it.
+        let config = Config {
+            detail_wavelength_miles: crate::NYQUIST_WAVELENGTH_MILES * 2.0,
+            detail_octaves: 2,
+            ..Config::default()
+        };
+        assert_eq!(config.validate(), Ok(()));
     }
 
     #[test]

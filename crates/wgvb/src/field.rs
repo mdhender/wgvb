@@ -17,8 +17,8 @@
 //!
 //! Every variant produces a value in `[-1, +1]`, documented per variant and
 //! checked by tests. Composition preserves the range: [`Field::Fbm`] and
-//! [`Field::Sum`] divide by the total weight, and [`Field::Warp`] only moves
-//! the sample position.
+//! [`Field::Sum`] divide by the total weight, and [`Field::Warp`] and
+//! [`Field::Offset`] only move the sample position.
 //!
 //! # Coordinates
 //!
@@ -40,6 +40,7 @@
 //! every wavelength in [`crate::Config`]; that is a later decision and an
 //! algorithm version change when it is made.
 
+use crate::hash::{DOM_FIELD_OFFSET, hash_n, signed_pair};
 use crate::noise::{simplex2, value2};
 
 /// A composable continuous scalar field over canonical world space.
@@ -98,6 +99,34 @@ pub enum Field {
         wx: Box<Field>,
         wy: Box<Field>,
         strength_miles: f64,
+    },
+
+    /// Samples `source` at a position translated by a constant, in `[-1, +1]`.
+    ///
+    /// A constant [`Field::Warp`], and the home of the seed-derived sampling
+    /// offset. Every noise lattice has its origin at the world origin, and the
+    /// world origin is a lattice point of every scale at once, so without this
+    /// node the fields are all *exactly* zero there: simplex noise has its
+    /// steepest gradient at a lattice point, and the region around `(0, 0, 0)`
+    /// is measurably steeper than the rest of the world for no reason a player
+    /// could ever be told. Translating the sample position makes the origin an
+    /// ordinary interior point.
+    ///
+    /// # Why it sits above the fbm rather than inside the leaf
+    ///
+    /// [`Field::Fbm`] multiplies the sample position by the octave frequency
+    /// before the leaf divides by the wavelength. A translation *inside* the
+    /// leaf would therefore be the same fraction of a lattice cell at every
+    /// octave, so at the origin every octave would sample the same cell at the
+    /// same offset with the same gradients — identical values and identical,
+    /// constructively adding slopes. That trades an exactly-zero origin for a
+    /// perfectly correlated one, which is the same defect with a smaller
+    /// coefficient. Above the fbm, the translation is scaled by the frequency
+    /// along with everything else, and the octaves land wherever they land.
+    Offset {
+        source: Box<Field>,
+        dx_miles: f64,
+        dy_miles: f64,
     },
 
     /// Weighted sum of fields, divided by the total absolute weight, in
@@ -165,6 +194,12 @@ impl Field {
                 let offset_y = wy.sample(x, y) * *strength_miles;
                 source.sample(x + offset_x, y + offset_y)
             }
+
+            Field::Offset {
+                source,
+                dx_miles,
+                dy_miles,
+            } => source.sample(x + *dx_miles, y + *dy_miles),
 
             Field::Sum(terms) => {
                 let mut total = 0.0_f64;
@@ -235,52 +270,128 @@ impl Fields {
             DOM_RELIEF, DOM_RIDGE_STRUCTURE, DOM_TERRAIN_DETAIL, DOM_WARP_X, DOM_WARP_Y,
         };
 
-        let fbm = |source: Field| Field::Fbm {
-            source: source.boxed(),
-            octaves: config.fbm_octaves,
-            lacunarity: config.fbm_lacunarity,
-            gain: config.fbm_gain,
+        // Every ladder of noise, in one shape: an fbm over one leaf, translated
+        // by that leaf's own seed-derived offset. The offset wraps the fbm
+        // rather than the leaf, for the reason on `Field::Offset`.
+        let ladder = |leaf: Field, domain: u64, wavelength_miles: f64, octaves: u8| {
+            offset(
+                seed,
+                domain,
+                wavelength_miles,
+                Field::Fbm {
+                    source: leaf.boxed(),
+                    octaves,
+                    lacunarity: config.fbm_lacunarity,
+                    gain: config.fbm_gain,
+                },
+            )
         };
         let simplex = |domain: u64, wavelength_miles: f64| Field::Simplex {
             seed,
             domain,
             wavelength_miles,
         };
+        let simplex_ladder = |domain: u64, wavelength_miles: f64, octaves: u8| {
+            ladder(
+                simplex(domain, wavelength_miles),
+                domain,
+                wavelength_miles,
+                octaves,
+            )
+        };
+        // A warp component is a bare leaf, so its offset has no fbm between it
+        // and the lattice — but it needs one all the same, or the displacement
+        // is exactly zero at the origin and the warp leaves that one point
+        // where the unwarped field put it.
+        let warp_component = |domain: u64, wavelength_miles: f64| {
+            offset(
+                seed,
+                domain,
+                wavelength_miles,
+                simplex(domain, wavelength_miles),
+            )
+        };
 
         let warp = |source: Field| Field::Warp {
             source: source.boxed(),
-            wx: simplex(DOM_WARP_X, config.warp_wavelength_miles).boxed(),
-            wy: simplex(DOM_WARP_Y, config.warp_wavelength_miles).boxed(),
+            wx: warp_component(DOM_WARP_X, config.warp_wavelength_miles).boxed(),
+            wy: warp_component(DOM_WARP_Y, config.warp_wavelength_miles).boxed(),
             strength_miles: config.warp_strength_miles,
         };
         let detail_warp = |source: Field| Field::Warp {
             source: source.boxed(),
-            wx: simplex(DOM_DETAIL_WARP_X, config.detail_warp_wavelength_miles).boxed(),
-            wy: simplex(DOM_DETAIL_WARP_Y, config.detail_warp_wavelength_miles).boxed(),
+            wx: warp_component(DOM_DETAIL_WARP_X, config.detail_warp_wavelength_miles).boxed(),
+            wy: warp_component(DOM_DETAIL_WARP_Y, config.detail_warp_wavelength_miles).boxed(),
             strength_miles: config.detail_warp_strength_miles,
         };
 
         Fields {
-            continentalness: warp(fbm(simplex(
+            continentalness: warp(simplex_ladder(
                 DOM_CONTINENTALNESS,
                 config.continental_wavelength_miles,
-            ))),
-            regional: warp(fbm(simplex(
+                config.continental_octaves,
+            )),
+            regional: warp(simplex_ladder(
                 DOM_REGIONAL_ELEVATION,
                 config.regional_wavelength_miles,
-            ))),
-            ridge: warp(fbm(simplex(
+                config.regional_octaves,
+            )),
+            ridge: warp(simplex_ladder(
                 DOM_RIDGE_STRUCTURE,
                 config.ridge_wavelength_miles,
-            ))),
-            local: detail_warp(fbm(simplex(DOM_RELIEF, config.local_wavelength_miles))),
-            detail: fbm(Field::Value {
-                seed,
-                domain: DOM_TERRAIN_DETAIL,
-                wavelength_miles: config.detail_wavelength_miles,
-            }),
+                config.ridge_octaves,
+            )),
+            local: detail_warp(simplex_ladder(
+                DOM_RELIEF,
+                config.local_wavelength_miles,
+                config.local_octaves,
+            )),
+            detail: ladder(
+                Field::Value {
+                    seed,
+                    domain: DOM_TERRAIN_DETAIL,
+                    wavelength_miles: config.detail_wavelength_miles,
+                },
+                DOM_TERRAIN_DETAIL,
+                config.detail_wavelength_miles,
+                config.detail_octaves,
+            ),
         }
     }
+}
+
+/// Wraps a field in its seed-derived sampling offset.
+///
+/// See [`Field::Offset`] for why the offset exists and why it belongs above the
+/// fbm. This function is the whole of "derived from the seed, applied per
+/// domain": the displacement is a hash of the seed and the field's *own* domain
+/// identifier, so two worlds do not share the anomaly's new location and the
+/// five scales do not all land on their own lattice points at some other single
+/// coordinate.
+fn offset(seed: crate::Seed, domain: u64, wavelength_miles: f64, source: Field) -> Field {
+    let (dx, dy) = offset_fraction(seed, domain);
+    Field::Offset {
+        source: source.boxed(),
+        dx_miles: dx * wavelength_miles,
+        dy_miles: dy * wavelength_miles,
+    }
+}
+
+/// The sampling offset for one domain, as a fraction of its wavelength.
+///
+/// In `[0.25, 0.75)` on each axis rather than anywhere in the cell. A hash is
+/// free to come back near zero, and a near-zero offset would leave the origin
+/// near a lattice point again for that seed — a fix that works for most seeds
+/// and not for the unlucky one is not a fix. Keeping the coarsest octave at
+/// least a quarter wavelength clear costs nothing: the finer octaves multiply
+/// the same displacement by the frequency, so they land wherever they land.
+///
+/// Scaled by the wavelength by the caller rather than being a literal distance,
+/// so the offset is irrational-looking relative to *that field's* lattice
+/// instead of being a round number of miles that some other wavelength divides.
+fn offset_fraction(seed: crate::Seed, domain: u64) -> (f64, f64) {
+    let (gx, gy) = signed_pair(hash_n(seed, DOM_FIELD_OFFSET, [domain.cast_signed()]));
+    (0.5 + 0.25 * gx, 0.5 + 0.25 * gy)
 }
 
 #[cfg(test)]
@@ -590,6 +701,19 @@ mod tests {
             panic!("continentalness must be warped");
         };
         assert_eq!(*strength_miles, config.warp_strength_miles);
+        let Field::Offset {
+            source,
+            dx_miles,
+            dy_miles,
+        } = source.as_ref()
+        else {
+            panic!("continentalness must be offset under the warp");
+        };
+        // The offset sits *above* the fbm, so the octaves do not share a
+        // fractional lattice position at the origin. See `Field::Offset`.
+        let (fx, fy) = offset_fraction(SEED, DOM_CONTINENTALNESS);
+        assert_eq!(*dx_miles, fx * config.continental_wavelength_miles);
+        assert_eq!(*dy_miles, fy * config.continental_wavelength_miles);
         let Field::Fbm {
             source,
             octaves,
@@ -597,9 +721,9 @@ mod tests {
             gain,
         } = source.as_ref()
         else {
-            panic!("continentalness must be fbm under the warp");
+            panic!("continentalness must be fbm under the offset");
         };
-        assert_eq!(*octaves, config.fbm_octaves);
+        assert_eq!(*octaves, config.continental_octaves);
         assert_eq!(*lacunarity, config.fbm_lacunarity);
         assert_eq!(*gain, config.fbm_gain);
         assert_eq!(
@@ -611,8 +735,149 @@ mod tests {
             }
         );
 
-        // The finest scale is value noise and carries no warp.
-        assert!(matches!(fields.detail, Field::Fbm { .. }));
+        // The finest scale is value noise and carries no warp, but it carries
+        // the same offset every other scale does.
+        let Field::Offset { source, .. } = &fields.detail else {
+            panic!("detail must be offset");
+        };
+        let Field::Fbm {
+            source, octaves, ..
+        } = source.as_ref()
+        else {
+            panic!("detail must be fbm under the offset");
+        };
+        assert_eq!(*octaves, config.detail_octaves);
+        assert!(matches!(**source, Field::Value { .. }));
+    }
+
+    #[test]
+    fn the_sampling_offset_is_a_pure_function_of_the_seed_and_the_domain() {
+        // Two generators with the same seed must agree bit for bit, and two
+        // with different seeds must put their lattices in different places —
+        // otherwise every world shares whatever anomaly is left.
+        for domain in [DOM_CONTINENTALNESS, DOM_TERRAIN_DETAIL, DOM_WARP_X] {
+            let (ax, ay) = offset_fraction(SEED, domain);
+            let (bx, by) = offset_fraction(SEED, domain);
+            assert_eq!(ax.to_bits(), bx.to_bits());
+            assert_eq!(ay.to_bits(), by.to_bits());
+
+            let mut seen = std::collections::HashSet::new();
+            for seed in 0..64_u64 {
+                let (x, y) = offset_fraction(seed, domain);
+                assert!(
+                    seen.insert((x.to_bits(), y.to_bits())),
+                    "seed {seed} repeats an offset"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_sampling_offset_keeps_the_origin_clear_of_the_lattice() {
+        // A hash is free to come back near zero, and a near-zero offset would
+        // leave the origin all but on a lattice point for that seed. The whole
+        // point is that this holds for every seed rather than for most of them.
+        for seed in 0..4_096_u64 {
+            for domain in [
+                DOM_CONTINENTALNESS,
+                DOM_TERRAIN_DETAIL,
+                DOM_WARP_X,
+                DOM_WARP_Y,
+            ] {
+                let (x, y) = offset_fraction(seed, domain);
+                assert!((0.25..0.75).contains(&x), "seed {seed}: {x}");
+                assert!((0.25..0.75).contains(&y), "seed {seed}: {y}");
+            }
+        }
+    }
+
+    #[test]
+    fn two_domains_do_not_share_a_sampling_offset() {
+        // Per domain, not per world: one offset shared by every field would
+        // move the coincidence to a different single coordinate rather than
+        // removing it.
+        let domains = [
+            DOM_CONTINENTALNESS,
+            crate::hash::DOM_REGIONAL_ELEVATION,
+            crate::hash::DOM_RIDGE_STRUCTURE,
+            crate::hash::DOM_RELIEF,
+            DOM_TERRAIN_DETAIL,
+            DOM_WARP_X,
+            DOM_WARP_Y,
+            crate::hash::DOM_DETAIL_WARP_X,
+            crate::hash::DOM_DETAIL_WARP_Y,
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for domain in domains {
+            let (x, y) = offset_fraction(SEED, domain);
+            assert!(
+                seen.insert((x.to_bits(), y.to_bits())),
+                "{domain:#x} repeats"
+            );
+        }
+    }
+
+    #[test]
+    fn every_field_is_something_other_than_zero_at_the_world_origin() {
+        // The direct statement of the defect the offset exists to fix: the
+        // world origin is a lattice point of every scale at once, and simplex
+        // noise is exactly zero at a lattice point.
+        for seed in [1_u64, 2, 42, 0x0123_4567_89ab_cdef, u64::MAX] {
+            let fields = Fields::build(seed, &Config::default());
+            for (name, field) in [
+                ("continentalness", &fields.continentalness),
+                ("regional", &fields.regional),
+                ("ridge", &fields.ridge),
+                ("local", &fields.local),
+                ("detail", &fields.detail),
+            ] {
+                let value = field.sample(0.0, 0.0);
+                assert_ne!(value, 0.0, "{name} is zero at the origin for seed {seed}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_octaves_do_not_agree_with_one_another_at_the_world_origin() {
+        // Why the offset sits above the fbm rather than inside the leaf. An
+        // offset folded into the leaf would put every octave at the same
+        // fractional lattice position at the origin — identical values, and
+        // slopes that add constructively instead of incoherently. Sampling the
+        // fbm's own source at the origin, at each octave's frequency, is what
+        // that would look like, so this asserts the octaves disagree.
+        let fields = Fields::build(SEED, &Config::default());
+        let Field::Warp { source, .. } = &fields.continentalness else {
+            panic!("continentalness must be warped");
+        };
+        let Field::Offset {
+            source,
+            dx_miles,
+            dy_miles,
+        } = source.as_ref()
+        else {
+            panic!("continentalness must be offset");
+        };
+        let Field::Fbm {
+            source, lacunarity, ..
+        } = source.as_ref()
+        else {
+            panic!("continentalness must be fbm");
+        };
+
+        let mut values = Vec::new();
+        let mut frequency = 1.0_f64;
+        for _ in 0..Config::default().continental_octaves {
+            values.push(source.sample(*dx_miles * frequency, *dy_miles * frequency));
+            frequency *= *lacunarity;
+        }
+        for i in 0..values.len() {
+            for j in (i + 1)..values.len() {
+                assert_ne!(
+                    values[i], values[j],
+                    "octaves {i} and {j} agree at the origin"
+                );
+            }
+        }
     }
 
     #[test]
@@ -637,11 +902,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn coarser_scales_vary_more_slowly_than_finer_ones() {
-        // The multi-scale table of section 10 is meaningless if the wavelengths
-        // do not actually order the fields by how fast they change. One hex is
-        // six miles.
+    /// How much each field moves per hex of travel, summed over a long walk.
+    ///
+    /// Indexed continentalness, regional, ridge, local, detail. One hex is six
+    /// miles.
+    fn variation_per_scale() -> [f64; 5] {
         let fields = Fields::build(SEED, &Config::default());
         let step = 6.0;
         let mut totals = [0.0_f64; 5];
@@ -658,12 +923,29 @@ mod tests {
                 totals[index] += (field.sample(x, 0.0) - field.sample(x + step, 0.0)).abs();
             }
         }
-        for index in 1..totals.len() {
-            assert!(
-                totals[index - 1] < totals[index],
-                "scale {index} does not vary faster than scale {}: {totals:?}",
-                index - 1
-            );
-        }
+        totals
+    }
+
+    #[test]
+    fn the_geographic_scales_vary_more_slowly_than_the_short_ones() {
+        // The multi-scale table of section 10 is meaningless if the wavelengths
+        // do not actually order the fields by how fast they change.
+        //
+        // The three geographic scales are strictly ordered, and both short
+        // scales move faster than all three. What is *not* asserted is an order
+        // between `local` and `detail`, and that is a consequence of the
+        // Nyquist bound rather than an oversight: the bound truncates the
+        // detail ladder hardest — two octaves against the hill scale's four —
+        // so the two now carry their fine content in overlapping bands and
+        // neither is reliably the faster. Their *base* wavelengths are still
+        // ordered, which `config.rs` asserts, and the fine ends of the two
+        // ladders — fifteen miles and eighteen — are close enough that
+        // asserting an order between them would be pinning a coin toss.
+        let totals = variation_per_scale();
+        let [continentalness, regional, ridge, local, detail] = totals;
+        assert!(continentalness < regional, "{totals:?}");
+        assert!(regional < ridge, "{totals:?}");
+        assert!(ridge < local, "{totals:?}");
+        assert!(ridge < detail, "{totals:?}");
     }
 }

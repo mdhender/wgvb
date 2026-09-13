@@ -1,4 +1,4 @@
-//! Golden coordinates for algorithm version 2.
+//! Golden coordinates for algorithm version 3.
 //!
 //! `DESIGN.md` sections 25.7, 27, 30.9, and the issue for phase 4.
 //!
@@ -13,19 +13,29 @@
 //!
 //! # Compatibility decision
 //!
-//! **This table was re-recorded for `ALGORITHM_VERSION = 2`, and the version was
+//! **This table was re-recorded for `ALGORITHM_VERSION = 3`, and the version was
 //! bumped in the same commit.**
 //!
-//! Phase 4 added the region uplift term, the ridge structure term, the constant
-//! elevation offset, and the contrast shaping — all of which are new values that
-//! could have been added without disturbing anything, exactly as phase 3 added
-//! region influence under version 1. What forced the bump is that the same
-//! tuning pass lowered `local_weight` and `detail_weight`, and those two feed
-//! the four-field composite that version 1 had already fixed as
-//! `Sample::elevation_raw`. The old coastlines dissolved into a wide band of
-//! speckle because the two shortest scales carried enough amplitude to cross
-//! sea level on their own; that is a defect worth a version, and the version is
-//! what makes it a decision instead of a surprise.
+//! Two changes to the noise composition, landed together because either one
+//! alone would have forced the bump and re-recording twice would have said
+//! nothing extra:
+//!
+//! 1. The fbm ladder gained a per-field octave count, bounded by the Nyquist
+//!    wavelength of the tile grid. The hill and detail fields ran five octaves
+//!    each, down to 7.5 and 2.25 miles, against a grid whose tiles are six
+//!    miles apart — those octaves could not be represented and aliased into
+//!    per-tile noise instead, with relief the visible casualty.
+//! 2. Every field graph gained a seed-derived sampling offset. The world origin
+//!    was a lattice point of every scale at once, so `continentalness`,
+//!    `regional`, and `local` were all *exactly* zero there — the previous
+//!    version of the first row of this table recorded three zeroes and is the
+//!    clearest surviving evidence of the defect.
+//!
+//! Neither is a tuning change, and the second one moves every coordinate in the
+//! world rather than a band of them. The distributions barely moved: the land
+//! fraction, the band shares, and the mean neighbor step all stayed inside the
+//! bounds `tests/elevation.rs` was already asserting, so no threshold or weight
+//! was retuned along with them.
 //!
 //! **After this point, a change that moves any value here changes every world.**
 //! Do not re-record the table to make a test pass. Either bump
@@ -88,28 +98,28 @@ const NAMES: [&str; 10] = [
 /// appear where the operands are largest.
 #[rustfmt::skip]
 const GOLDEN: [((i64, i64), [u64; NAMES.len()]); 22] = [
-    ((0, 0), [0x0000000000000000, 0x0000000000000000, 0x0000000000000000, 0x3fe199b086000000, 0x3fe1feb70b2be6c2, 0x3f93c3051435e50d, 0xbfd1f732738c4ab9, 0xbfd8d1b0fbe4ccb8, 0xbfd3efa83894c0af, 0x3fef8a84807c8b13]),
-    ((1, 0), [0x3f280c14c532e0cc, 0xbfadd1d3518c61be, 0xbfcffc225ea47721, 0x3fc819ed07d54848, 0x3fdb3313a9217ec0, 0xbfa0812004e1f78f, 0xbfd1f713b20b3b3f, 0xbfd8d1d5e749eb40, 0xbfd8c138fd69803a, 0x3ff0000000000000]),
-    ((1, -1), [0x3f93037128345c18, 0xbfabf318c71e1e91, 0xbfd3927af39812ff, 0x3fd3339eb69674cd, 0x3fe0b7cf1abae034, 0xbf95ea6aa1a55e47, 0xbfd1f6f283b2d7b2, 0xbfd8d1895e986625, 0xbfd71b64104ee0b0, 0x3ff0000000000000]),
-    ((0, -1), [0x3f92d5567a10f70a, 0x3f6b6a562fff05a9, 0xbfbd526d849ab0d6, 0x3fd848d34d9a844e, 0x3fe5d3309bc8be90, 0x3f8eb8a7895c3193, 0xbfd1f6ed6401dd9f, 0xbfd8d14cdccb6d5f, 0xbfd365bb47f3d874, 0x3feaa3bda03d26f5]),
-    ((-1, 0), [0xbf280c14c532d628, 0x3fadd1d3518c61cb, 0x3fd1f49cd0fde9b5, 0x3fd6748ca158d9c3, 0x3fe72fda8ad7bb62, 0x3fab915ef59151c7, 0xbfd1f6c3eb9c9dad, 0xbfd8d19735a749b8, 0xbfd093c61cf7abde, 0x3fe6524fa134f2ef]),
-    ((-1, 1), [0xbf93037128345c2e, 0x3fabf318c71e1e68, 0x3fd58db49a38cd9d, 0x3fd7a44e6d716744, 0x3fe375149639f2c8, 0x3fa85fdf372abc27, 0xbfd1f6c923a4247f, 0xbfd8d16ed0ed2e48, 0xbfd1f5bb416cf4b8, 0x3fe6b9808e51d158]),
-    ((0, 1), [0xbf92d5567a10f724, 0xbf6b6a562fff0800, 0x3fc441fc70d5dc97, 0x3fd8856cc22cc602, 0x3fde2c56206a9afe, 0x3f8feee2c0aef607, 0xbfd1f6fa4f53094d, 0xbfd8d18dd31ba471, 0xbfd53664512dcb85, 0x3fee82b17d6a8540]),
-    ((-1, -1), [0x3f929f013cb7dd4c, 0x3faf19ab35963b49, 0x3fbcaf57c0d4942f, 0x3fc6ddec07589808, 0x3fea540b431191c5, 0x3fa6c7be44489059, 0xbfd1f67c21f38a99, 0xbfd8d1311737c6d0, 0xbfd0795f5d29bc15, 0x3fe4b67c46334373]),
-    ((7, -3), [0x3fabcdc76ec9d6a2, 0xbfd1c76c0f8cb124, 0xbfd49000e8d9bfc0, 0xbfe46fa01bffa062, 0x3fd078b337e990f6, 0xbfb99d9fbea0dfc9, 0xbfd1f2a10a009463, 0xbfd8d2b34a0ac867, 0xbfdf62f9fe6840af, 0x3fcea65d926b85b6]),
-    ((-97, 411), [0xbfe21187a1d9a0e1, 0x3f856a1c1847f044, 0xbfc9a41f33972b15, 0xbfcafb3cce27abc3, 0x3fe031b674fa9a14, 0xbfd688f6b51ba941, 0x3fda48de8edf864d, 0xbfda2797ebd9c9e0, 0xbfe3032c2b25ae83, 0x3fc344b2732ec60c]),
-    ((1000, 1000), [0xbfc3e24c6bad03c8, 0xbfcb2b98790eaef5, 0xbfbbaf256278f59a, 0xbfab567f5613156f, 0x3fc2137f461d120c, 0xbfc506d00d9d5a87, 0xbfceba195163d17d, 0xbfebdc7ee482d6ac, 0xbfe2a7a8b3c4674e, 0x3fc6f74517a5ba72]),
-    ((-1000, -1000), [0xbfb278ff51429fec, 0x3fa1ce200e710257, 0xbfd94a5911bd7120, 0xbfe21b8ba6eb3cc8, 0x3fe768d0482a416a, 0xbfb628027d6f86f6, 0x3fe390eedf4c6313, 0xbfd2bdda9c0f2455, 0xbfbc98579a3063fc, 0x3fd7bea15b08baa4]),
-    ((12345, -6789), [0xbfda02ae81379c97, 0xbfbf03912f308fb3, 0xbfba4b893d324b3a, 0x3fd7f57fd5130af7, 0x3feaf8e7e7ba8982, 0xbfd136c126d28a86, 0xbfb673119ae3bf01, 0xbfd4fc0d59b29503, 0xbfe38410a4dc0c26, 0x3fdf742e3c55fa14]),
-    ((-12345, 6789), [0xbfc0288cae5d50bb, 0xbfdb6f88989dd403, 0x3fda3c6a028e56f8, 0xbfd771a6dd0f598e, 0x3fe688cbd161f582, 0xbfc68936f5349c3c, 0x3fe38f9c4d84c69a, 0xbfe0f881d1a6c30b, 0xbfd4181989aa5783, 0x3fd2b8513a04d1e3]),
-    ((32767, 0), [0xbfbcabc087fb659f, 0xbfd60474dd0f9f3f, 0xbf8e29270868ecff, 0x3fdc996ee7517b42, 0x3fe573a157699ac8, 0xbfc36ad887ba09f3, 0x3febf209376f9dc0, 0x3fc4c1cc515ec6cb, 0xbfb94bcdf82fb6cd, 0x3ff0000000000000]),
-    ((0, 32767), [0x3fc8a64b3122861a, 0xbf5c70fb1ad49cf8, 0xbfc2a8f272cbb3a6, 0x3fbdddb6d86c2908, 0x3fec32147458d332, 0x3fba7967d2d5980f, 0x3fe3047690bc3e99, 0xbfb5aa77db75285d, 0x3fcb00e32458e8a4, 0x3ff0000000000000]),
-    ((-32767, 0), [0x3f6a52f84a1b7732, 0xbfbfc6266b7e9f99, 0x3fc7c83a0be5179d, 0x3fc56859f6d366db, 0x3feb6f4c8a21fa06, 0xbf8914743768f88e, 0x3fcd4a597c628ec5, 0xbfe718af44354139, 0xbfc9ede12bfdbb0b, 0x3ff0000000000000]),
-    ((0, -32767), [0xbf801e3961b41ccf, 0x3fda69ee5eb8dd05, 0x3fd7277464aa9228, 0x3fd1cab17474f4b7, 0x3fdc8d7b6090cb30, 0x3fc42b10b91204d6, 0xbfba70aefe47cd9b, 0x3fe750a6249095c0, 0x3f99a2953927e428, 0x3ff0000000000000]),
-    ((32767, -32767), [0x3fc04e2716db3e19, 0x3fa5c6b298a72adf, 0x3fdcc97ec824786f, 0xbfc3e7d5aae69d62, 0x3fda1f327f41ced2, 0x3fbef53fe48bbef4, 0x3fd272d8382eae36, 0xbfe05f2837ea0c51, 0x3f893b703f8fbdd8, 0x3ff0000000000000]),
-    ((-32767, 32767), [0xbfd12f58d8c47999, 0x3fc85a822675aa8a, 0xbfcb9670185580d9, 0xbf7b766cbf9cd8ca, 0x3fe577cdb81be576, 0xbfbedb6697aa85b0, 0xbfb5c8f1c3380bd8, 0x3fde7d17bedda511, 0xbfd73c7742562f63, 0x3ff0000000000000]),
-    ((10922, -4681), [0xbf7b9f4f7b7f3ae3, 0x3fb6c851d0804c0a, 0xbfc35b27f78460c6, 0x3fc1f69e2ec1c223, 0x3fec49e56c1a0933, 0x3f8c224b182d2a81, 0xbfdb1afc96a3b248, 0xbfe5c4ac6e8f703d, 0xbfd7990adaa0c88c, 0x3fc6f60b1f8a57a3]),
-    ((-6553, 2978), [0x3fa02f66602174f4, 0x3fbcea1377d57265, 0x3fb8fd1d1c99ac00, 0xbfbe63f8dcce67a2, 0x3fe5b0a09eef4162, 0x3faca013f90ea42e, 0xbfcb6aaf58588594, 0xbfd6e6eeaa960a75, 0xbfccba4c9e927628, 0x3fbef5fa739617cd]),
+    ((0, 0), [0x3fa5b0402bbc41d9, 0xbfc7b08f83c88d02, 0x3fd73a1e9eba1a86, 0x3fc1d8b06b63dd13, 0x3fe8fa01501d59f5, 0x3f7e3e7ecfc993d3, 0xbfd1f732738c4ab9, 0xbfd8d1b0fbe4ccb8, 0xbfd50203836cc654, 0x3fce7e5ccbf059ad]),
+    ((1, 0), [0x3fa93a45c5bbf814, 0xbfc4c43a31c1c7e9, 0x3fd2bf426d80f84f, 0xbf9500d175803ec0, 0x3fe8ea865b13cf28, 0x3f7a043b920ecd39, 0xbfd1f713b20b3b3f, 0xbfd8d1d5e749eb40, 0xbfd4e9c08c42c2e0, 0x3fd6b7e5f883cc54]),
+    ((1, -1), [0x3fa4e9852de7fb36, 0xbfc65bde3bf43e94, 0x3fd2e5fbb13c01da, 0xbfb71bb978827e3d, 0x3feb1940d5c94160, 0xbf723f73ffba6085, 0xbfd1f6f283b2d7b2, 0xbfd8d1895e986625, 0xbfd598bdf135d2ee, 0x3fd4abed6238a536]),
+    ((0, -1), [0x3fa168c3bdb3cfab, 0xbfc8e3a7a13cf33f, 0x3fd16096eab4a4b1, 0x3fbd615323786aed, 0x3feadfd6715cb4fa, 0xbf82b1368dd36e87, 0xbfd1f6ed6401dd9f, 0xbfd8d14cdccb6d5f, 0xbfd601341748bab6, 0x3fd05c68ad61cb29]),
+    ((-1, 0), [0x3fa24583f148cfe3, 0xbfc9e2d65786c742, 0x3fd95692bb04f105, 0x3fc6b5fe0c45ea8d, 0x3fe8c8b8b25a1400, 0x3f660aeaeb0ae69e, 0xbfd1f6c3eb9c9dad, 0xbfd8d19735a749b8, 0xbfd593ddc3adec1e, 0x3fcea05be9faccac]),
+    ((-1, 1), [0x3fa6892b15f6ca7d, 0xbfc8ad2cbb82bb47, 0x3fe201f54ebb4612, 0x3fc09e8c2d8153c5, 0x3fe782551f73c9e4, 0x3f97d90a7b4042dc, 0xbfd1f6c923a4247f, 0xbfd8d16ed0ed2e48, 0xbfd44e75ae447f09, 0x3fd504acd4c3b3a3]),
+    ((0, 1), [0x3fa9fc5ef75254b7, 0xbfc60812439b8d42, 0x3fd91f12b0666192, 0x3fc1a1e45787c0ad, 0x3fe73f4a77967606, 0x3f931086b8b1b6bf, 0xbfd1f6fa4f53094d, 0xbfd8d18dd31ba471, 0xbfd44cd61d034191, 0x3fd166e197384286]),
+    ((-1, -1), [0x3f9c074cd91c6f8e, 0xbfca8548e22ff9f7, 0x3fd2f1cab22ef647, 0x3fcec699ae0ad57f, 0x3fe9fd1fc8b60965, 0xbf84d60c08c501bf, 0xbfd1f67c21f38a99, 0xbfd8d1311737c6d0, 0xbfd65005af14aebe, 0x3fc9586852e2e6d0]),
+    ((7, -3), [0x3fb1bbfe7f347c80, 0xbfa2893ea64cb1eb, 0xbfc67378c5a103cf, 0xbfe344624ce2c52f, 0x3fee520aa663544e, 0xbf7afa39d61df4e0, 0xbfd1f2a10a009463, 0xbfd8d2b34a0ac867, 0xbfd3eaceac8a22d5, 0x3fe53659bf843cd4]),
+    ((-97, 411), [0x3fd787723cb7bf9b, 0xbfc0ddde5a524848, 0x3fdd4d3856550f54, 0xbfdac8e7c156eddc, 0x3fe90606144f27d5, 0x3fc9d93fb66adae8, 0x3fda48de8edf864d, 0xbfda2797ebd9c9e0, 0x3fcc8b9ce4633fbe, 0x3fd0b50301b485a8]),
+    ((1000, 1000), [0xbfca7a38fe986ae3, 0xbfd4bbba576d4ee0, 0x3fe0f7edfc3a66dc, 0xbfd52b9b41a7c30d, 0x3fe495ad394c9020, 0xbfc723f1db6ae8f1, 0xbfceba195163d17d, 0xbfebdc7ee482d6ac, 0xbfe40fbca79f0d71, 0x3fd49bf28aea9895]),
+    ((-1000, -1000), [0x3fd5db19bd98f9ca, 0x3fde6c143f964405, 0x3fde661d164a5c73, 0xbfe11d1e33a6328d, 0x3fe653b9d449166a, 0x3fd724663f6ccb76, 0x3fe390eedf4c6313, 0xbfd2bdda9c0f2455, 0x3fe0c95c61ccea35, 0x3fd54b199261560d]),
+    ((12345, -6789), [0xbfc24e9b7e7bdb72, 0xbfd89649decc499b, 0x3fd2712b48f40e53, 0xbfcd028e0c0bbf70, 0x3fefa0cc29a45b29, 0xbfc6dde1d6569d9d, 0xbfb673119ae3bf01, 0xbfd4fc0d59b29503, 0xbfe0002ff4fde014, 0x3fdbd3cf5b2f4ff1]),
+    ((-12345, 6789), [0x3fe1528705057ed6, 0x3fe0259fd04953da, 0x3fd8f0564e7e9bf6, 0xbfc8986eff84a2ac, 0x3fefc321a08366ec, 0x3fdf7578c3f3b9c1, 0x3fe38f9c4d84c69a, 0xbfe0f881d1a6c30b, 0x3fe5a60ec5143dbe, 0x3fc31c8ae27e68b8]),
+    ((32767, 0), [0x3fdcc7d2f1de9aad, 0xbfa6b5215fdd73d1, 0x3fc504440e49071f, 0xbfa053964393042b, 0x3fe8dfcc49b36a55, 0x3fd0d9d88925cfc7, 0x3febf209376f9dc0, 0x3fc4c1cc515ec6cb, 0x3fe12c41870b3b42, 0x3ff0000000000000]),
+    ((0, 32767), [0xbfd4ae8650418a43, 0xbfb8fe482eb3405b, 0xbf90d6822e288f6f, 0x3fda916e37964f88, 0x3fef6d79574e60e1, 0xbfca29d19e4e295b, 0x3fe3047690bc3e99, 0xbfb5aa77db75285d, 0xbfd1090c182d3362, 0x3ff0000000000000]),
+    ((-32767, 0), [0x3fd6ba2d32e74a64, 0x3fe632e57a7bf94c, 0xbfc2592576966f0b, 0x3f67ca851f07ed55, 0x3feae127900a795a, 0x3fd9796d92b4e167, 0x3fcd4a597c628ec5, 0xbfe718af44354139, 0x3fdcb0330c2c41ea, 0x3ff0000000000000]),
+    ((0, -32767), [0xbfbb9ee06efda31f, 0x3fadbdea0f7b8529, 0xbfde3dd88c01860d, 0x3fda79af6ecb4eb3, 0x3fe4013c05fd60a8, 0xbfb2b30da694ad4c, 0xbfba70aefe47cd9b, 0x3fe750a6249095c0, 0xbfd257afee14b95b, 0x3ff0000000000000]),
+    ((32767, -32767), [0xbfddad1618474cfa, 0x3fe09f867c6a590b, 0xbfdf07700cc59342, 0xbfc1429088bcb85c, 0x3fe35047bdc0450e, 0xbfc550e1a0e3d94d, 0x3fd272d8382eae36, 0xbfe05f2837ea0c51, 0xbfd7cd8f01b76e8e, 0x3ff0000000000000]),
+    ((-32767, 32767), [0xbfbdb368be176591, 0xbfcb708d13506c56, 0x3fd9613040524719, 0x3fe78c8fe9af2681, 0x3fea6d5cb4c55212, 0xbfb1e66b62ab4f83, 0xbfb5c8f1c3380bd8, 0x3fde7d17bedda511, 0xbfd1294d7c368b3e, 0x3ff0000000000000]),
+    ((10922, -4681), [0x3fd43cc03c6cde54, 0x3fd105e058588140, 0x3fa3d16cbafa0193, 0xbfb2fc6dc8a24c75, 0x3fedd06b05cf7771, 0x3fd0dce7f41a1d0d, 0xbfdb1afc96a3b248, 0xbfe5c4ac6e8f703d, 0x3f834c68159dfb4a, 0x3fc78d9da75014da]),
+    ((-6553, 2978), [0xbfb1b86c12a42872, 0x3fc03fdb0c7fdadc, 0xbfbbd9acb236b31d, 0x3fbf3de740abb02b, 0x3fe51cc76c60c5a4, 0xbf81a7f833ce70da, 0xbfcb6aaf58588594, 0xbfd6e6eeaa960a75, 0xbfd42467b3d9187f, 0x3fd00a74597498d4]),
 ];
 
 #[test]

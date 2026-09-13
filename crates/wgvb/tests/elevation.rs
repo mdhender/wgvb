@@ -294,6 +294,69 @@ fn relief_spans_its_range_without_saturating() {
 }
 
 #[test]
+fn relief_carries_structure_rather_than_speckle() {
+    // The point of the per-field octave counts. Relief is a first difference
+    // between neighbors, which is exactly the operation that amplifies content
+    // near the tile grid's Nyquist wavelength — so when a field ran octaves
+    // below that limit, the aliased part dominated relief and the layer read as
+    // uniform speckle with faint ridge structure buried under it.
+    //
+    // Written as a correlation rather than as a bound on the mean, because a
+    // bound on the mean is exactly what a per-tile-noise field passes: speckle
+    // has a perfectly reasonable average. Ground that is steep is steep for a
+    // reason that reaches further than one hex, so a tile's relief must
+    // resemble its neighbor's more than it resembles a tile a hundred hexes
+    // away. The far-pair correlation is measured rather than assumed to be
+    // zero, so this compares against the sample's own chance level.
+    for seed in SEEDS {
+        let generator = Generator::with_defaults(seed);
+        let coords = block((11_000, -4_500), 48);
+        let here: Vec<f64> = coords.iter().map(|c| generator.relief(*c)).collect();
+        let neighbor: Vec<f64> = coords
+            .iter()
+            .map(|c| generator.relief(c.neighbor(0)))
+            .collect();
+        let far: Vec<f64> = coords
+            .iter()
+            .map(|c| generator.relief(Coord::new(i64::from(c.q()) + 977, i64::from(c.r()) - 613)))
+            .collect();
+
+        let adjacent = correlation(&here, &neighbor);
+        let chance = correlation(&here, &far).abs();
+        assert!(
+            adjacent > 0.5,
+            "seed {seed:#x}: relief correlates only {adjacent:.3} with its neighbor"
+        );
+        assert!(
+            adjacent > chance * 4.0,
+            "seed {seed:#x}: neighbor correlation {adjacent:.3} is not clear of the \
+             chance level {chance:.3}"
+        );
+    }
+}
+
+/// Pearson correlation of two equally long samples.
+///
+/// Written out rather than pulled in: the core crate depends on `serde` and
+/// `thiserror` and nothing else, and a test that reaches for a statistics crate
+/// to compute a covariance is a dependency nobody needed.
+fn correlation(a: &[f64], b: &[f64]) -> f64 {
+    assert_eq!(a.len(), b.len());
+    let count = f64::from(u32::try_from(a.len()).expect("a test sample fits in u32"));
+    let mean_a = a.iter().sum::<f64>() / count;
+    let mean_b = b.iter().sum::<f64>() / count;
+    let mut covariance = 0.0_f64;
+    let mut variance_a = 0.0_f64;
+    let mut variance_b = 0.0_f64;
+    for (x, y) in a.iter().zip(b) {
+        covariance += (x - mean_a) * (y - mean_b);
+        variance_a += (x - mean_a) * (x - mean_a);
+        variance_b += (y - mean_b) * (y - mean_b);
+    }
+    covariance / (variance_a.sqrt() * variance_b.sqrt())
+}
+
+#[test]
 fn relief_is_higher_in_rough_places_than_in_smooth_ones() {
     // Relief has to be a measurement of the ground rather than a second noise
     // field: the tiles the ridge term is strongest on must be the steep ones.

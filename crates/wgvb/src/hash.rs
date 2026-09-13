@@ -75,6 +75,13 @@ pub const DOM_WARP_Y: u64 = domain(b"warp-y");
 pub const DOM_DETAIL_WARP_X: u64 = domain(b"detail-warp-x");
 /// Domain: `y` component of the weaker high-frequency warp.
 pub const DOM_DETAIL_WARP_Y: u64 = domain(b"detail-warp-y");
+/// Domain: the seed-derived sampling offset that keeps the world origin off
+/// every noise lattice at once.
+///
+/// Hashed with the *field's own* domain rather than with a coordinate, so each
+/// field graph gets its own displacement and no single world position is a
+/// lattice point of all of them. See `Fields::build`.
+pub const DOM_FIELD_OFFSET: u64 = domain(b"field-offset");
 
 /// Odd increment from SplitMix64, the fractional part of the golden ratio
 /// scaled to 64 bits. Separates successive inputs so two coordinates cannot
@@ -244,6 +251,7 @@ mod tests {
         assert_eq!(DOM_WARP_Y, 0xa1e1_8732_3c66_64ad);
         assert_eq!(DOM_DETAIL_WARP_X, 0xcbea_8698_f30a_6740);
         assert_eq!(DOM_DETAIL_WARP_Y, 0xcbea_8798_f30a_68f3);
+        assert_eq!(DOM_FIELD_OFFSET, 0xb8f5_3a94_de4a_5069);
     }
 
     #[test]
@@ -270,6 +278,7 @@ mod tests {
             DOM_WARP_Y,
             DOM_DETAIL_WARP_X,
             DOM_DETAIL_WARP_Y,
+            DOM_FIELD_OFFSET,
         ]
     }
 

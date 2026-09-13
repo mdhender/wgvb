@@ -538,6 +538,7 @@ pub enum Field {
     Simplex { seed: u64, domain: u64, wavelength_miles: f64 },
     Fbm { source: Box<Field>, octaves: u8, lacunarity: f64, gain: f64 },
     Warp { source: Box<Field>, wx: Box<Field>, wy: Box<Field>, strength_miles: f64 },
+    Offset { source: Box<Field>, dx_miles: f64, dy_miles: f64 },
     Sum(Vec<(f64, Field)>),
 }
 
@@ -570,6 +571,71 @@ Normalized output range is `[-1, +1]`, documented per variant.
 Put it in a private `noise` module of the `wgvb` crate. Cite the reference
 implementation and its license in a module comment.
 
+### 9.3 The octave ladder stops at the tile grid's Nyquist wavelength
+
+Adjacent tile centers are `2 * APOTHEM_MILES` apart, so the shortest feature the
+grid can carry is `4 * APOTHEM_MILES` — twelve miles at the alpha scale. An fbm
+octave below that limit is not detail. It cannot be represented at all, and what
+reaches the tile is an aliased sample of it: per-tile noise, paid for with a
+noise evaluation and then thrown away.
+
+Relief is where this shows. Relief is a first difference between neighbors,
+which is exactly the operation that amplifies content near the limit, so the
+aliased octaves dominate it and the layer reads as speckle with the real ridge
+structure buried underneath. Elevation itself survives, because the aliased
+amplitude is small against the coarse scales — which is precisely why nothing
+catches this without a rule.
+
+Two consequences for the implementation:
+
+- **The octave count is per field, not global.** `Field::Fbm` already carries
+  it per node; a single configuration value shared by every scale is an
+  artificial coupling that forces the shortest field to run the longest field's
+  ladder.
+- **Nyquist is a validation bound, not the mechanism that picks the counts.**
+  Deriving each count by truncating at the limit would make it a step function
+  of a float, so retuning a wavelength by a tenth of a mile would silently flip
+  a count and move every value in the world — the knife-edge threshold section
+  25.6 warns about. Configuration states the counts; validation rejects a ladder
+  that reaches below the limit; the limit is derived from `APOTHEM_MILES` rather
+  than written as a literal.
+
+### 9.4 Displace the sampling position by a seed-derived offset
+
+Every noise lattice has its origin at the coordinate origin, so without an
+offset the world origin is a lattice point of *every* scale at once and every
+field is exactly zero there. Simplex noise has its steepest gradient at a
+lattice point, so the region around the origin is measurably steeper than the
+rest of the world — a permanent, visible anomaly at the one coordinate every
+player frame is expressed against, every worked example uses, and every
+diagnostic render defaults to. It is the same objection section 11.2 raises to
+the anchor lattice and section 33.4 raises to region-owned terrain: no place may
+be special because of how the implementation addresses it.
+
+The fix is a translation of the sample position. It must be:
+
+- **derived from the seed**, so two worlds do not share the anomaly's new
+  location;
+- **applied per domain**, so the scales do not all land on their own lattice
+  points at some *other* single coordinate — moving the defect is not fixing
+  it;
+- **applied above the fbm rather than inside the leaf.** The fbm scales the
+  sample position by the octave frequency before the leaf divides by the
+  wavelength, so an offset folded into the leaf is the same fraction of a cell
+  at every octave: at the origin every octave would then sample the same cell,
+  with the same gradients, and their slopes would add constructively. That is
+  the same defect with a smaller coefficient.
+- **scaled by the wavelength**, so it is irrational-looking relative to that
+  field's lattice instead of a round number of miles that some other wavelength
+  divides, and **kept clear of the cell corners** — a hash is free to come back
+  near zero, and a fix that works for most seeds is not a fix.
+
+A single rendered window does not demonstrate any of this. At one seed the
+origin is a bright dot among a handful of others. Only a measurement pooled over
+many seeds separates it from terrain, because ordinary terrain is uncorrelated
+between worlds and cancels, leaving whatever is a function of position relative
+to the centre.
+
 ---
 
 ## 10. Multi-Scale Geography
@@ -596,6 +662,8 @@ Approximate starting wavelengths. One hex of wavelength means 6 miles of center-
 | Local detail | 3–12 hexes | 18–72 miles |
 
 These are starting values, not requirements. The exact constants live in the configuration structure, not scattered through the implementation.
+
+The wavelengths above are each scale's *base*. Each is the top of an fbm ladder that descends by the lacunarity, so the octave count decides how far into the next scale's band a field reaches, and section 9.3 bounds how far it may. Once that bound truncates the shortest ladder hardest, the fields stop being strictly ordered by how fast they vary even though their base wavelengths still are; that is a consequence of the bound and not a defect to design around.
 
 ---
 
@@ -975,8 +1043,10 @@ pub enum ConfigError {
     NotPositive { field: &'static str, value: f64 },
     #[error("{field} must be in [{lo}, {hi}], got {value}")]
     OutOfRange { field: &'static str, value: f64, lo: f64, hi: f64 },
-    #[error("fbm octaves must be in 1..=16, got {0}")]
-    OctaveCount(u8),
+    #[error("{field} must be in 1..=16, got {octaves}")]
+    OctaveCount { field: &'static str, octaves: u8 },
+    #[error("{field} = {octaves} puts an octave below the Nyquist wavelength")]
+    BelowNyquist { field: &'static str, octaves: u8, /* ... */ },
 }
 ```
 
@@ -1037,7 +1107,7 @@ pub struct Config {
 
 Field names above are illustrative. The implemented configuration must include **every** weight, scale, threshold, and feature toggle that can alter generated output. Scale fields must state whether they are wavelengths or frequencies and in what unit — the names above use `_wavelength_miles` and `_hexes` suffixes for exactly this reason.
 
-Validation must reject non-finite floats, non-positive sizes and scales, out-of-range normalized thresholds, and combinations that cannot be evaluated safely.
+Validation must reject non-finite floats, non-positive sizes and scales, out-of-range normalized thresholds, and combinations that cannot be evaluated safely. It must also reject an fbm ladder whose octaves reach below the tile grid's Nyquist wavelength (section 9.3), because that combination is evaluable and wrong rather than unevaluable.
 
 The complete effective configuration, including defaulted values, is authoritative database data for the single world. Creating a database writes that complete configuration before gameplay; reopening never silently substitutes current program defaults for missing stored values.
 
