@@ -67,6 +67,33 @@ pub enum HeatBand {
     Hot = 4,
 }
 
+impl HeatBand {
+    /// Every band, coldest first — which is also discriminant order.
+    ///
+    /// Exists because a renderer has to be able to draw a key, and a key built
+    /// from a hand-written list somewhere else is a list that can fall out of
+    /// step with this enum without anything failing to compile.
+    pub const ALL: [HeatBand; 5] = [
+        HeatBand::Polar,
+        HeatBand::Cold,
+        HeatBand::Temperate,
+        HeatBand::Warm,
+        HeatBand::Hot,
+    ];
+
+    /// The band's name, lowercase, for a legend or a command line.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            HeatBand::Polar => "polar",
+            HeatBand::Cold => "cold",
+            HeatBand::Temperate => "temperate",
+            HeatBand::Warm => "warm",
+            HeatBand::Hot => "hot",
+        }
+    }
+}
+
 /// Moisture band. See `DESIGN.md` section 16.1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[repr(u8)]
@@ -76,6 +103,29 @@ pub enum MoistureBand {
     Moderate = 2,
     Humid = 3,
     Saturated = 4,
+}
+
+impl MoistureBand {
+    /// Every band, driest first — which is also discriminant order.
+    pub const ALL: [MoistureBand; 5] = [
+        MoistureBand::Arid,
+        MoistureBand::Dry,
+        MoistureBand::Moderate,
+        MoistureBand::Humid,
+        MoistureBand::Saturated,
+    ];
+
+    /// The band's name, lowercase, for a legend or a command line.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            MoistureBand::Arid => "arid",
+            MoistureBand::Dry => "dry",
+            MoistureBand::Moderate => "moderate",
+            MoistureBand::Humid => "humid",
+            MoistureBand::Saturated => "saturated",
+        }
+    }
 }
 
 /// Climate as two independent axes. The two-axis representation is part of the
@@ -216,6 +266,34 @@ mod tests {
             );
         }
         assert_eq!(all.iter().filter(|b| b.is_water()).count(), 2);
+    }
+
+    #[test]
+    fn every_band_list_is_in_discriminant_order_and_complete() {
+        // The lists a renderer draws a key from. If one of them ever misses a
+        // variant the key silently stops showing it, so the check is that the
+        // list *is* the discriminants, in order.
+        for (index, band) in HeatBand::ALL.into_iter().enumerate() {
+            assert_eq!(usize::from(band as u8), index, "{band:?}");
+        }
+        for (index, band) in MoistureBand::ALL.into_iter().enumerate() {
+            assert_eq!(usize::from(band as u8), index, "{band:?}");
+        }
+    }
+
+    #[test]
+    fn every_band_name_is_distinct_and_lowercase() {
+        let mut seen = Vec::new();
+        for name in HeatBand::ALL
+            .map(HeatBand::name)
+            .into_iter()
+            .chain(MoistureBand::ALL.map(MoistureBand::name))
+        {
+            assert_eq!(name, name.to_lowercase(), "{name}");
+            assert!(!seen.contains(&name), "{name} is used twice");
+            seen.push(name);
+        }
+        assert_eq!(seen.len(), 10);
     }
 
     #[test]

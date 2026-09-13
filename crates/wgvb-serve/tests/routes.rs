@@ -3,8 +3,8 @@
 //! Everything here goes through [`wgvb_serve::reply`], which is a pure function
 //! of a request target, so none of it opens a socket.
 
-use wgvb::{Coord, DIRECTIONS, WORLD_RADIUS, direction_index};
-use wgvb_render::{Layer, MAX_IMAGE_PIXELS, Viewport};
+use wgvb::{Climate, Coord, DIRECTIONS, HeatBand, MoistureBand, WORLD_RADIUS, direction_index};
+use wgvb_render::{Layer, MAX_IMAGE_PIXELS, Viewport, climate_color, color};
 use wgvb_serve::{
     COMPASS, DEFAULT_COLS, DEFAULT_HEX_RADIUS, DEFAULT_ROWS, HTML, MAX_COLS, MAX_HEX_RADIUS,
     MAX_ROWS, PNG, Reply, Route, TEXT, View, reply,
@@ -509,6 +509,106 @@ fn a_layer_link_changes_only_the_layer() {
     let mut all: Vec<Layer> = Layer::ALL.to_vec();
     all.sort_unstable_by_key(|layer| layer.name());
     assert_eq!(layers, all, "every layer is reachable in one click");
+}
+
+#[test]
+fn every_scalar_layer_shows_a_labeled_ramp() {
+    // The shared ramp is the reason this key exists: the same blue is `deep` on
+    // one layer, `cold` on the next and `dry` on the one after, and a reader
+    // who has to remember which is which eventually will not.
+    for layer in Layer::ALL {
+        let Some(scale) = layer.scale() else {
+            continue;
+        };
+        let html = page(&format!("?layer={}", layer.name()));
+        assert_eq!(html.status, 200, "{}", layer.name());
+        let text = html.text();
+        assert!(
+            text.contains(&format!("<span class=\"end\">{}</span>", scale.low)),
+            "{} does not label the bottom of its ramp",
+            layer.name()
+        );
+        assert!(
+            text.contains(&format!("<span class=\"end\">{}</span>", scale.high)),
+            "{} does not label the top of its ramp",
+            layer.name()
+        );
+        // The ramp is drawn from the palette, at the layer's own range. Relief
+        // is unsigned, so its key must start at flat ground rather than at the
+        // bottom of a ramp it never reaches.
+        let (low, high) = scale.range;
+        for end in [low, high] {
+            let rgba = color(end);
+            assert!(
+                text.contains(&format!(
+                    "background:#{:02x}{:02x}{:02x}",
+                    rgba[0], rgba[1], rgba[2]
+                )),
+                "{} does not draw the color of {end}",
+                layer.name()
+            );
+        }
+        assert!(
+            !text.contains("<table class=\"key\">"),
+            "{} drew the climate table",
+            layer.name()
+        );
+    }
+}
+
+#[test]
+fn the_climate_layer_shows_the_two_axis_table_instead() {
+    // Climate is not a scale, so it does not get a ramp: a pair of bands has no
+    // position on one, and flattening the two axes onto one is the single mixed
+    // scale the model is built to avoid.
+    let html = page("?layer=climate");
+    assert_eq!(html.status, 200);
+    let text = html.text();
+    assert!(!text.contains("class=\"ramp\""), "climate drew a ramp");
+    assert!(text.contains("<table class=\"key\">"));
+
+    for heat in HeatBand::ALL {
+        assert!(text.contains(heat.name()), "{} is missing", heat.name());
+        for moisture in MoistureBand::ALL {
+            assert!(
+                text.contains(moisture.name()),
+                "{} is missing",
+                moisture.name()
+            );
+            let rgba = climate_color(Climate { heat, moisture });
+            assert!(
+                text.contains(&format!(
+                    "background:#{:02x}{:02x}{:02x}",
+                    rgba[0], rgba[1], rgba[2]
+                )),
+                "{} {} is missing from the key",
+                heat.name(),
+                moisture.name()
+            );
+        }
+    }
+}
+
+#[test]
+fn the_key_is_not_navigation() {
+    // A test because it would be easy and wrong to make a swatch a link: the
+    // scroll controls and the layer selector are the page's navigation, and the
+    // link count above is what pins that.
+    for layer in [Layer::Elevation, Layer::Climate] {
+        let html = page(&format!("?layer={}", layer.name()));
+        let text = html.text();
+        let key_start = text
+            .find("class=\"legend\"")
+            .or_else(|| text.find("<table class=\"key\">"))
+            .expect("the page carries a key");
+        let key = &text[key_start..];
+        let key_end = key.find("<dl").expect("the readout follows the key");
+        assert!(
+            !key[..key_end].contains("href="),
+            "{} put a link in its key",
+            layer.name()
+        );
+    }
 }
 
 #[test]

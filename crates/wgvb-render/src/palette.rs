@@ -167,23 +167,11 @@ mod tests {
     use super::*;
     use wgvb::{HeatBand, MoistureBand};
 
-    /// Every heat band, in discriminant order.
-    const HEAT_BANDS: [HeatBand; 5] = [
-        HeatBand::Polar,
-        HeatBand::Cold,
-        HeatBand::Temperate,
-        HeatBand::Warm,
-        HeatBand::Hot,
-    ];
-
-    /// Every moisture band, in discriminant order.
-    const MOISTURE_BANDS: [MoistureBand; 5] = [
-        MoistureBand::Arid,
-        MoistureBand::Dry,
-        MoistureBand::Moderate,
-        MoistureBand::Humid,
-        MoistureBand::Saturated,
-    ];
+    /// Every band, in discriminant order, from the core crate rather than from
+    /// a copy kept here: a hand-written list is a list that can quietly lose a
+    /// variant and take this file's coverage with it.
+    const HEAT_BANDS: [HeatBand; 5] = HeatBand::ALL;
+    const MOISTURE_BANDS: [MoistureBand; 5] = MoistureBand::ALL;
 
     #[test]
     fn the_stops_ascend_and_span_the_whole_range() {

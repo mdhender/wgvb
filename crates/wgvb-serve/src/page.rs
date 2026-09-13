@@ -7,8 +7,8 @@
 
 use std::fmt::Write as _;
 
-use wgvb::ALGORITHM_VERSION;
-use wgvb_render::{Layer, RENDER_VERSION, Viewport};
+use wgvb::{ALGORITHM_VERSION, Climate, HeatBand, MoistureBand};
+use wgvb_render::{Layer, RENDER_VERSION, Scale, Viewport, climate_color, color};
 
 use crate::view::{COMPASS, Compass, MAX_HEX_RADIUS, MIN_HEX_RADIUS, View};
 
@@ -52,6 +52,7 @@ pub fn page(view: &View, viewport: &Viewport) -> String {
 
     html.push_str(&compass_rose(view));
     html.push_str(&layers(view));
+    html.push_str(&legend(view.layer));
 
     html.push_str("<dl class=\"readout\">\n");
     let _ = writeln!(
@@ -169,6 +170,89 @@ fn layers(view: &View) -> String {
     html
 }
 
+/// The key for whichever layer is being drawn.
+///
+/// A map with an unlabeled palette is a picture. Every scalar layer shares one
+/// ramp — deliberately, so two of them can be compared by eye — which means the
+/// same blue is *deep* on one layer, *cold* on the next, and *dry* on the one
+/// after; a reader who has to hold that in their head will eventually not.
+/// [`Layer::scale`] is where the words come from, because the renderer owns the
+/// palette and this server is a front end rather than a second renderer.
+///
+/// Nothing here emits a link. The scroll and layer controls are the page's
+/// navigation, and a test counts them.
+fn legend(layer: Layer) -> String {
+    match layer.scale() {
+        Some(scale) => ramp_key(scale),
+        None => climate_key(),
+    }
+}
+
+/// How many swatches a ramp key is drawn with.
+///
+/// Enough that the stops of the palette are visible as stops rather than as one
+/// gradient, and few enough that the row fits a narrow window.
+const RAMP_STEPS: u32 = 40;
+
+/// The scalar ramp, labeled at both ends.
+fn ramp_key(scale: Scale) -> String {
+    let mut html = String::new();
+    let _ = write!(
+        html,
+        "<div class=\"legend\" aria-label=\"what the colors mean\">\n         <span class=\"end\">{}</span><span class=\"ramp\">",
+        scale.low
+    );
+    let (low, high) = scale.range;
+    for step in 0..=RAMP_STEPS {
+        let t = f64::from(step) / f64::from(RAMP_STEPS);
+        let value = low + t * (high - low);
+        let rgba = color(value);
+        let _ = write!(
+            html,
+            "<i style=\"background:#{:02x}{:02x}{:02x}\" title=\"{value:+.2}\"></i>",
+            rgba[0], rgba[1], rgba[2]
+        );
+    }
+    let _ = writeln!(
+        html,
+        "</span><span class=\"end\">{}</span>\n</div>",
+        scale.high
+    );
+    html
+}
+
+/// The climate table, as the two axes it is.
+///
+/// A grid rather than a row, because climate is not a scale: the heat band runs
+/// down it and the moisture band across, which is the shape of the model in
+/// `DESIGN.md` section 16.1 and the shape of the palette that draws it.
+fn climate_key() -> String {
+    let mut html = String::new();
+    html.push_str("<table class=\"key\">\n");
+    html.push_str("<caption>heat down, moisture across</caption>\n<tr><td></td>");
+    for moisture in MoistureBand::ALL {
+        let _ = write!(html, "<th scope=\"col\">{}</th>", moisture.name());
+    }
+    html.push_str("</tr>\n");
+    for heat in HeatBand::ALL {
+        let _ = write!(html, "<tr><th scope=\"row\">{}</th>", heat.name());
+        for moisture in MoistureBand::ALL {
+            let rgba = climate_color(Climate { heat, moisture });
+            // No text in the cell: the row and column headers already name
+            // the band, and a label repeated twenty-five times is noise a
+            // screen reader has to read out.
+            let _ = write!(
+                html,
+                "<td style=\"background:#{:02x}{:02x}{:02x}\"></td>",
+                rgba[0], rgba[1], rgba[2]
+            );
+        }
+        html.push_str("</tr>\n");
+    }
+    html.push_str("</table>\n");
+    html
+}
+
 /// The whole stylesheet, inline, because a second request for eight hundred
 /// bytes is not worth a second route.
 const STYLE: &str = r#"<style>
@@ -197,6 +281,15 @@ h1 code { color: var(--ink); }
             text-decoration: none; color: var(--quiet); }
 .layers a:hover { color: var(--ink); border-color: var(--ink); }
 .layers a.current { color: var(--paper); background: var(--ink); border-color: var(--ink); }
+.legend { display: flex; align-items: center; gap: 8px; margin: 16px 0; flex-wrap: wrap; }
+.legend .end { color: var(--quiet); }
+.legend .ramp { display: flex; border: 1px solid var(--edge); }
+.legend .ramp i { display: block; width: 8px; height: 16px; }
+.key { border-collapse: collapse; margin: 16px 0; }
+.key caption { text-align: left; color: var(--quiet); padding-bottom: 4px; }
+.key th { font-weight: 400; color: var(--quiet); text-align: right; padding: 0 6px; }
+.key th[scope="col"] { text-align: center; }
+.key td { width: 5.5em; height: 2.2em; border: 1px solid var(--paper); }
 .readout { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 16px 0; }
 .readout dt { color: var(--quiet); }
 .readout dd { margin: 0; }

@@ -179,6 +179,24 @@ pub enum Layer {
     Climate,
 }
 
+/// What a scalar layer's ramp means, for a legend.
+///
+/// The renderer owns this rather than the server, because it owns the palette:
+/// `DESIGN.md` section 29.1 makes `wgvb-serve` a front end and not a second
+/// renderer, and a front end that decided for itself what blue meant would be
+/// exactly that.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Scale {
+    /// What the bottom of the ramp means on this layer.
+    pub low: &'static str,
+    /// What the top means.
+    pub high: &'static str,
+    /// The values those two ends are, which is not always `-1` and `+1`:
+    /// relief is unsigned, so it uses only the upper half of the shared ramp
+    /// and a key drawn over the whole of it would be a lie.
+    pub range: (f64, f64),
+}
+
 impl Layer {
     /// Every layer, in the order the command line lists them.
     pub const ALL: [Layer; 13] = [
@@ -229,6 +247,39 @@ impl Layer {
             .into_iter()
             .find(|layer| layer.name() == name)
             .ok_or_else(|| RenderError::UnknownLayer(name.to_string()))
+    }
+
+    /// What this layer's ramp runs between, or `None` if it has no ramp.
+    ///
+    /// `None` for [`Layer::Climate`] and only for it: a pair of bands is drawn
+    /// from [`climate_color`]'s table, which is a key rather than a scale.
+    ///
+    /// The words matter more here than anywhere else in the crate. Every scalar
+    /// layer shares one ramp, deliberately, so that two of them can be compared
+    /// by eye — and the cost of that is an image where blue means *deep* on one
+    /// layer, *cold* on the next, and *dry* on the one after. A reader who has
+    /// to remember which is which will eventually not.
+    #[must_use]
+    pub const fn scale(self) -> Option<Scale> {
+        let full = (-1.0, 1.0);
+        let (low, high, range) = match self {
+            Layer::Continentalness => ("ocean", "continent", full),
+            Layer::Regional => ("sunken", "raised", full),
+            Layer::Local => ("hollow", "hill", full),
+            Layer::Detail => ("low", "high", full),
+            Layer::ElevationRaw => ("deep", "high", full),
+            Layer::Elevation => ("deep ocean", "mountain", full),
+            // Relief is unsigned, so only the top half of the ramp is ever
+            // used and the key says so.
+            Layer::Relief => ("flat", "steep", (0.0, 1.0)),
+            Layer::Ridge => ("trough", "crest", full),
+            Layer::Roughness => ("smooth", "rough", full),
+            Layer::RegionInfluence => ("sunken", "uplifted", full),
+            Layer::Temperature => ("cold", "hot", full),
+            Layer::Moisture => ("dry", "wet", full),
+            Layer::Climate => return None,
+        };
+        Some(Scale { low, high, range })
     }
 
     /// This layer's scalar at one coordinate, or `None` if it has none.
@@ -1093,6 +1144,47 @@ mod tests {
         assert_ne!(
             render(&generator, &a, Layer::ElevationRaw),
             render(&generator, &b, Layer::ElevationRaw)
+        );
+    }
+
+    #[test]
+    fn every_scalar_layer_has_a_scale_and_climate_has_none() {
+        // The two partial functions on `Layer` must agree about which layers
+        // are scalar. If they ever disagree, one of them has grown a variant
+        // the other has not.
+        for layer in Layer::ALL {
+            let generator = generator();
+            assert_eq!(
+                layer.scale().is_some(),
+                layer.value(&generator, Coord::ORIGIN).is_some(),
+                "{}",
+                layer.name()
+            );
+        }
+        assert!(Layer::Climate.scale().is_none());
+    }
+
+    #[test]
+    fn every_scale_is_a_real_ascending_range_with_two_distinct_words() {
+        for layer in Layer::ALL {
+            let Some(scale) = layer.scale() else {
+                continue;
+            };
+            let (low, high) = scale.range;
+            assert!(low < high, "{}: {low} to {high}", layer.name());
+            assert!(
+                (-1.0..=1.0).contains(&low) && (-1.0..=1.0).contains(&high),
+                "{}: {low} to {high}",
+                layer.name()
+            );
+            assert_ne!(scale.low, scale.high, "{}", layer.name());
+            assert!(!scale.low.is_empty() && !scale.high.is_empty());
+        }
+        // Relief is the one that does not span the whole ramp, and it is the
+        // reason `range` exists at all.
+        assert_eq!(
+            Layer::Relief.scale().expect("relief is scalar").range,
+            (0.0, 1.0)
         );
     }
 
