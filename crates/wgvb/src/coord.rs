@@ -880,8 +880,16 @@ mod tests {
                 let rotate_first = Coord::new(rotated.0, rotated.1);
                 let normalize_first = Coord::new(q, r).rotate(k);
                 assert_eq!(rotate_first, normalize_first, "({q}, {r}) rotated {k}");
+                // A step count is a direction index: it normalizes.
+                assert_eq!(
+                    normalize_first,
+                    Coord::new(q, r).rotate(k + 6),
+                    "({q}, {r}) rotated {k} and {} differ",
+                    k + 6
+                );
             }
-            // Six rotations are the identity on Coord too.
+            // Zero steps and six steps are both the identity on Coord.
+            assert_eq!(Coord::new(q, r).rotate(0), Coord::new(q, r));
             assert_eq!(Coord::new(q, r).rotate(6), Coord::new(q, r));
             assert_eq!(Coord::new(q, r).rotate(-1).rotate(1), Coord::new(q, r));
         }

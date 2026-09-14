@@ -1571,6 +1571,13 @@ eight cores is a larger and simpler win than any cache with a coherency story.
 Revisit this when a profile shows the same coordinates being generated
 repeatedly, which a bounded viewport render does not do.
 
+**A player's frame is authoritative on the same terms.** The origin hex and
+rotation each player is assigned at creation are not derived from the seed, are
+never regenerated, and survive discarding every cache — and they are what gives
+every other piece of player-facing state its meaning, since a settlement one
+player calls `(3, -1)` is a different tile under a different frame. Section 28
+says where the three scalars live and appendix A has the transform.
+
 ### 27.7 Connection handling
 
 `rusqlite::Connection` is `Send` but not `Sync`. Either give each thread its own
@@ -1605,11 +1612,13 @@ wgvb/
         wgvb-store/             single-world SQLite persistence
             migrations/
                 0001_initial.sql
+                0002_player.sql
             src/
                 lib.rs          APPLICATION_ID, OpenError, re-exports
                 schema.rs       the user_version migration ladder
                 world.rs        World; creation and the opening gates
                 overlay.rs      sparse coordinate-keyed player overlays
+                player.rs       player frames: origin q, origin r, rotation
                 fingerprint.rs  canonical CBOR and SHA-256
         wgvb-render/            bounded viewport rendering; owns the hexx dependency
             src/
@@ -1641,6 +1650,15 @@ screen-axis offsets already compose. `wgvb-store` persists only the three scalar
 origin `q`, origin `r`, rotation — so it needs no dependency on the frame type.
 `wgvb-render` and `wgvb-store` are siblings, so this placement is also what keeps a
 player concept out of `wgvb` itself; see appendix A.
+
+The store's half is the `player` table added in migration 2: keyed by player
+identity rather than by `(q, r)`, because the origin is a value there and not a
+key. It is written once, when the player is created, and there is no operation
+that moves a frame afterwards — origin and rotation are what every coordinate
+and heading that player has ever been given *mean*, so changing one would
+silently relabel all of it. The rotation is validated to `0..6` on write and
+again on read; an out-of-range stored value is a typed refusal, never a
+`rem_euclid`.
 
 **The workspace is doing real work here.** The Go design could only *advise*
 "do not introduce persistence into the core package". Here it is a fact of the

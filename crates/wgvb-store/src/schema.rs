@@ -16,6 +16,8 @@ use crate::OpenError;
 const MIGRATIONS: &[&str] = &[
     // schema version 0 -> 1
     include_str!("../migrations/0001_initial.sql"),
+    // schema version 1 -> 2
+    include_str!("../migrations/0002_player.sql"),
 ];
 
 /// Highest `PRAGMA user_version` this binary can operate on. A database

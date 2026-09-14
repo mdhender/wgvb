@@ -9,13 +9,16 @@
 //!
 //! Three of those four are singleton metadata here; the fourth is whatever the
 //! caller asks for. What this crate stores beyond them is *authoritative player
-//! state* — sparse overlays keyed by canonical `(q, r)`. Generated tiles,
+//! state* — sparse overlays keyed by canonical `(q, r)`, and the frame each
+//! player sees the world through, which is what gives their coordinates a
+//! meaning at all. Generated tiles,
 //! chunks, and rendered images are reproducible caches, not records, and none
 //! of them is stored: section 27.6 says to measure before building a tile
 //! cache, and `tests/bench.rs` in the core crate is that measurement.
 
 mod fingerprint;
 mod overlay;
+mod player;
 mod schema;
 mod world;
 
@@ -24,6 +27,7 @@ pub use fingerprint::{
     fingerprint_of_bytes,
 };
 pub use overlay::{Bounds, Settlement};
+pub use player::{Player, PlayerError};
 pub use schema::SCHEMA_VERSION;
 pub use world::World;
 

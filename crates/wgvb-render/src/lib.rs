@@ -35,15 +35,21 @@
 //!
 //! Per-player rotation — each player is assigned an origin hex *and* a rotation,
 //! so one player's north is absolute direction `k` and another's is not — is a
-//! render-layer concern that belongs here, but it arrives with the player state
-//! that stores it. This phase renders the unrotated absolute frame.
+//! render-layer concern, and [`PlayerFrame`] is it: the conversion between one
+//! player's coordinates and canonical ones, in exact integer arithmetic. What
+//! [`render`] draws is still the unrotated absolute frame; drawing *through* a
+//! frame is not a bare substitution of one coordinate for the other, because
+//! the layout's top is absolute direction 2 while a frame's north is its own
+//! direction 0.
 
+mod frame;
 mod overlay;
 mod palette;
 
 use hexx::{Hex, HexLayout, HexOrientation, OffsetHexMode, Vec2};
 use wgvb::{Component, Coord, Generator, Sample};
 
+pub use frame::{FrameError, PlayerFrame};
 pub use overlay::Overlays;
 pub use palette::{
     BACKGROUND, FOG, SETTLEMENT, SETTLEMENT_EDGE, climate_color, color, terrain_color,
