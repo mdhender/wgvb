@@ -1548,7 +1548,7 @@ No gate may perform an application write before it passes. Older generator versi
 
 ### 27.6 What is authoritative and what is not
 
-Persist mutable game and player state as sparse overlays keyed by canonical `(q, r)`. No `world_id` column: one database holds one world.
+Persist mutable game and player state as sparse overlays keyed by canonical `(q, r)`. No `world_id` column: one database holds one world — and one world's game. The world and the game are not separate files; appendix C, *One file, not two*, records why.
 
 Generated tiles, generated chunks, and PNG files are reproducible caches, not authoritative records, and may be discarded at any time. Any cache entry must carry — and be validated against — the configuration fingerprint and, for rendered output, the palette/render version.
 
@@ -2494,6 +2494,37 @@ Honestly: `redb`'s MVCC model is a better match for section 22's
 immutable-generator design than `Connection: !Sync` and manual connection
 handling. That cost is real but small, because the hot path — generation —
 touches no database at all (section 27.7).
+
+### One file, not two
+
+**Decision, 2026-09-13: the world and the game live in one database.** Issue #9
+raised the alternative — a world file and a game file, opened separately — and
+it is rejected.
+
+The argument for splitting was a testing one: map work should not have to stand
+up a game. That advantage is already available and costs nothing, because the
+dependency graph gives it. Map tests link `wgvb` and `wgvb-render` and never
+`wgvb-store`; `Generator::with_defaults(seed)` needs no database to exist at
+all, and a generator test that touched SQLite would be a design error today.
+Store tests use `Connection::open_in_memory()` and touch no file either.
+Splitting the file would buy nothing that the crate boundary has not already
+bought.
+
+The argument against splitting is asymmetric and worse than it first looks.
+Restoring an older *world* file is harmless when the seed, algorithm version,
+and configuration match, because terrain is reproducible — that is the whole
+point of section 2.1. The danger is a world file whose seed or configuration
+differs: every player overlay and every player frame is then anchored to
+terrain that no longer exists at those coordinates, **silently**, because a
+settlement is a coordinate and a coordinate still resolves. One database makes
+that unrepresentable. World and game are backed up, restored, and gated
+together, and the fingerprint gate in section 27.5 already covers both.
+Splitting would require inventing a seventh gate that stores world identity in
+the game file and checks it on every open — a new mechanism to protect against
+a hazard that not splitting does not have.
+
+Revisit only if a genuinely read-only world is shared across several games,
+which is the one shape where the split pays for its gate.
 
 ### If this is revisited
 
