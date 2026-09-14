@@ -1,26 +1,36 @@
-//! The section 31 measurements, and the question they exist to answer.
+//! The throughput measurements of `DESIGN.md` section 31.
 //!
-//! `DESIGN.md` section 27.6 says not to build a tile cache in the first
-//! implementation and to **measure first**, because a cache that is never
-//! faster than regeneration is pure liability: a fingerprint to validate and a
-//! staleness bug to hit. This file is that measurement.
+//! Section 31 states no performance target, deliberately. What it specifies is
+//! how a number is produced and what has to be held fixed for two numbers to be
+//! comparable — against WGVA, against another target, or against this workspace
+//! before a change. This file is the harness.
 //!
 //! ```sh
 //! cargo test --release -p wgvb --test bench -- --ignored --nocapture
 //! ```
 //!
-//! They are `#[ignore]`d timing loops rather than `#[bench]` functions because
-//! `#[bench]` is a nightly feature and this workspace is pinned to stable, and
-//! `criterion` is a dependency the design did not take. Section 31 says a plain
-//! `--release` timing loop is enough to answer the only question that matters
-//! early, and it is: the answer is not close.
+//! Section 27.6 is the decision that first needed it: do not build a tile cache
+//! in the first implementation, and **measure first**, because a cache that is
+//! never faster than regeneration is pure liability — a fingerprint to validate
+//! and a staleness bug to hit.
 //!
-//! **A debug build is ten to thirty times slower.** These print throughput
-//! rather than asserting on it — a timing assertion on shared CI hardware fails
-//! for reasons that have nothing to do with the code. The floor the design
-//! names, tens of thousands of tiles per second, is a signal that something is
-//! wrong if missed rather than a goal, and
-//! [`the_floor_from_section_31_is_not_in_danger`] is the one assertion here.
+//! The rows are chosen so that the differences between them mean something.
+//! [`bench_tile`] against [`bench_chunk`] and [`bench_region_radius_32`] is the
+//! batching question, which a pure function of its own coordinate should
+//! answer "nothing to amortize". [`bench_relief`] against [`bench_tile`] splits
+//! one tile into its seven elevation evaluations and everything classification
+//! adds on top.
+//!
+//! These are `#[ignore]`d timing loops rather than `#[bench]` functions because
+//! `#[bench]` is a nightly feature and this workspace is pinned to stable, and
+//! `criterion` is a dependency the design did not take.
+//!
+//! **A debug build is ten to thirty times slower.** They print throughput
+//! rather than asserting on it: a timing assertion on shared CI hardware fails
+//! for reasons that have nothing to do with the code. The one assertion in this
+//! file, [`generation_has_not_acquired_an_accidental_quadratic`], is set three
+//! orders of magnitude below a release build and is a correctness tripwire
+//! rather than a performance bar.
 
 use std::hint::black_box;
 use std::time::{Duration, Instant};
@@ -129,15 +139,19 @@ fn bench_relief() {
 }
 
 #[test]
-fn the_floor_from_section_31_is_not_in_danger() {
-    // Section 31 names tens of thousands of tiles per second as a floor that
-    // signals something is wrong if missed. This runs in every `cargo test`,
-    // including a debug build, so the bar is set an order of magnitude below
-    // that floor: it is a smoke alarm for an accidental quadratic or an
-    // accidental allocation per tile, not a performance target.
+fn generation_has_not_acquired_an_accidental_quadratic() {
+    // Not a performance target. Section 31 deliberately states none: it says
+    // how throughput is measured and leaves what the number should be to
+    // whoever is comparing two of them.
     //
-    // The real numbers live in `bench_tile` and are three orders of magnitude
-    // above this.
+    // This is a smoke alarm, and it runs in every `cargo test` including a
+    // debug build, so the bar is three orders of magnitude below what a release
+    // build actually does. What trips it is an accidental quadratic or an
+    // allocation per tile — a defect in the generation path wearing a
+    // stopwatch, not a regression in how fast the arithmetic is.
+    //
+    // Real figures come from `bench_tile` and the rest of this file, per
+    // section 31.1.
     let generator = Generator::with_defaults(1);
     let coords = window(Coord::new(0, 0), 32, 32);
 

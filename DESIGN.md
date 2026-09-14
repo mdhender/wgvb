@@ -196,19 +196,44 @@ The physical values and their elevation, climate, and terrain classifications ar
 The generator may also expose intermediate values for diagnostics:
 
 ```rust
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Sample {
     pub coord: Coord,
+    pub world: Vec2,
 
+    // The four noise scales of section 10, before any composition.
     pub continentalness: f64,
-    pub regional_uplift: f64,
-    pub basin_influence: f64,
+    pub regional: f64,
+    pub local: f64,
+    pub detail: f64,
 
-    pub tile: Tile,
+    // The ridge structure term, before the region roughness scales it.
+    pub ridge: f64,
+
+    // The weighted sum of the four noise scales alone.
+    pub elevation_raw: f64,
+
+    // Blended region parameters, carried so a tuning layer can be drawn.
+    pub regional_uplift: f64,
+    pub roughness: f64,
+
+    // The classified scalars, bit-identical to the matching `Tile` fields.
+    pub elevation: f64,
+    pub heat: f64,
+    pub moisture: f64,
+    pub basin_influence: f64,
+    pub volcanic: f64,
 }
 ```
 
 Diagnostic values are not required for ordinary game use.
+
+**A `Sample` does not carry a `Tile`, and that is the shape rather than an
+omission.** A sample is one elevation evaluation; relief and terrain are seven,
+because both read the six neighboring elevation scalars. Folding a tile into a
+sample would make every diagnostic layer pay a terrain classification it is not
+drawing, which is exactly the distinction `Layer::cost` in `wgvb-render` is
+built on. A caller that wants both asks for both.
 
 ---
 
@@ -393,10 +418,18 @@ change makes the fields periodic without updating this section.
 library. It needs only the six direction vectors and the `f64` axial-to-world
 conversion above, both a few lines, and both pinned by the algorithm version.
 
-The `wgvb-render` crate uses [`hexx`](https://crates.io/crates/hexx) for
-layouts, polygon corners, hit testing, ring and spiral traversal, and finite-area
-iteration. `hexx::Hex` is `i32`-backed, so `Component` converts losslessly
-through one adapter function.
+The `wgvb-render` crate uses [`hexx`](https://crates.io/crates/hexx) for the
+flat-top layout, the offset-coordinate conversion a viewport rectangle is built
+from, and hit testing a pixel back to a cell. `hexx::Hex` is `i32`-backed, so
+`Component` converts losslessly through one adapter function.
+
+It is deliberately *not* used for two things it offers. Pixels are assigned by
+hit testing rather than by filling polygons, so no corner list is ever built;
+and no ring, spiral, or finite-area traversal appears, because the shapes this
+renderer walks are viewport rectangles rather than hex neighborhoods. Nor is
+`hexx`'s own wraparound: `wrap_in_range` overflows `i32` and loses `f32`
+precision at `N = i16::MAX`, which is why section 7.1's normalizer is written
+here.
 
 > **`hexx` layout math is `f32`.** `hexx` is built on `glam`, and its layout and
 > world-position types use `f32` vectors. That is fine for pixel geometry and
@@ -463,17 +496,34 @@ const fn domain(name: &[u8]) -> u64 {
 pub const DOM_CONTINENTALNESS: u64 = domain(b"continentalness");
 pub const DOM_REGIONAL_ELEVATION: u64 = domain(b"regional-elevation");
 pub const DOM_RELIEF: u64 = domain(b"relief");
-pub const DOM_MOISTURE: u64 = domain(b"moisture");
-pub const DOM_TEMPERATURE: u64 = domain(b"temperature");
 pub const DOM_TERRAIN_DETAIL: u64 = domain(b"terrain-detail");
+pub const DOM_TEMPERATURE: u64 = domain(b"temperature");
+pub const DOM_MOISTURE: u64 = domain(b"moisture");
+pub const DOM_MOISTURE_VARIATION: u64 = domain(b"moisture-variation");
 pub const DOM_REGION_STYLE: u64 = domain(b"region-style");
 pub const DOM_RIDGE_ORIENTATION: u64 = domain(b"ridge-orientation");
+pub const DOM_RIDGE_STRUCTURE: u64 = domain(b"ridge-structure");
 pub const DOM_BASIN: u64 = domain(b"basin");
+pub const DOM_BASIN_REGIONAL: u64 = domain(b"basin-regional");
+pub const DOM_BASIN_LOCAL: u64 = domain(b"basin-local");
 pub const DOM_VOLCANIC: u64 = domain(b"volcanic");
+pub const DOM_WARP_X: u64 = domain(b"warp-x");
+pub const DOM_WARP_Y: u64 = domain(b"warp-y");
+pub const DOM_DETAIL_WARP_X: u64 = domain(b"detail-warp-x");
+pub const DOM_DETAIL_WARP_Y: u64 = domain(b"detail-warp-y");
+pub const DOM_FIELD_OFFSET: u64 = domain(b"field-offset");
 ```
 
 Adding a domain never disturbs an existing one. Renaming one changes the world
 and is an algorithm version change.
+
+**One field node, one domain.** Where a family has several scales — the three
+basin fields, the broad moisture field and its variation term — each gets its
+own domain rather than sharing one. Sharing would give two nodes the same
+gradient table *and* the same seed-derived sampling offset (section 9.4), so at
+the world origin they would land in the same lattice cell at the same fractional
+position and return the same value. Separate domains make that impossible rather
+than unlikely.
 
 ### 8.2 The hash primitive
 
@@ -532,7 +582,8 @@ The set of field kinds is *closed* and comes from configuration, so an enum is
 both faster and a better fit:
 
 ```rust
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum Field {
     Value { seed: u64, domain: u64, wavelength_miles: f64 },
     Simplex { seed: u64, domain: u64, wavelength_miles: f64 },
@@ -736,17 +787,21 @@ pub struct RegionParams {
     pub moisture_bias: f64,
     pub heat_bias: f64,
     pub roughness: f64,
-    pub ridge_angle: f64,
+    pub basin_bias: f64,
+    pub volcanic: f64,
+    pub variation: f64,
+    pub ridge: UnitVec2,
 }
 ```
 
-`ridge_angle` is stored and consumed as a **unit direction vector**
+Ridge orientation is stored and consumed as a **unit direction vector**
 `(cos, sin)`, not as an angle in radians, so that no trigonometric function
 appears in the generation path. See section 25.2. Derive the vector by hashing
 two values and normalizing, or by hashing a point and rejecting until it lands in
-the unit disc — both use only multiply, add, and `sqrt`. The implementation names
-the field `ridge` for that reason: a field called `ridge_angle` holding a vector
-invites someone to put an angle in it.
+the unit disc — both use only multiply, add, and `sqrt`. The field is named
+`ridge` and typed `UnitVec2` for that reason: a field called `ridge_angle`
+holding a vector invites someone to put an angle in it, and an `f64` there
+accepts one without complaint.
 
 A ridge orientation is a **line, not an arrow**: `v` and `-v` name the same
 orientation, and consumers must take `|dot|` rather than `dot`. This is not a
@@ -946,8 +1001,13 @@ ocean and inland water
     -> volcano
     -> mountain and alpine terrain
     -> wetland
+    -> coastal land
     -> climate-driven land cover
 ```
+
+Coastal land sits between wetland and the climate cover rather than above both.
+A saturated shoreline is a marsh, which says more than *coast* does; anything
+else at the water's edge is a coast before it is a grassland.
 
 Ocean water still comes from the primary elevation field and sea-level threshold. Make a best effort to derive coherent depressions from deterministic basin fields at broad, regional, and local scales. Basin influence is useful even when no water is assigned: dry endorheic regions such as the Great Basin are valid geographic results.
 
@@ -1055,6 +1115,11 @@ impl Coord {
     pub fn r(self) -> Component;
     pub fn s(self) -> Component;
     pub fn neighbor(self, direction: i32) -> Coord;
+    /// Rotation by `steps` sixths of a turn, in index order. Appendix A.
+    pub fn rotate(self, steps: i32) -> Coord;
+    /// Chunk, region, and macro-region addressing. Section 23.
+    pub fn cell(self, size_hexes: u32) -> (i64, i64);
+    pub fn cell_offset(self, size_hexes: u32) -> (i64, i64);
 }
 
 impl Generator {
@@ -1065,16 +1130,24 @@ impl Generator {
     pub fn elevation_at(&self, c: Coord) -> f64;
     pub fn relief(&self, c: Coord) -> f64;
     pub fn sample(&self, c: Coord) -> Sample;
+    /// The blended region parameters at a coordinate. Sections 11 and 12.
+    pub fn region_params(&self, c: Coord) -> RegionParams;
 
     pub fn seed(&self) -> Seed;
     pub fn config(&self) -> &Config;
-    pub fn config_fingerprint(&self) -> [u8; 32];
 }
 ```
 
 `Coord::new` is the entry point for unwrapped or intermediate coordinates and returns the canonical representative. `neighbor` normalizes before returning. Because `Coord` has no other constructor, `tile` has nothing to re-normalize — the type already guarantees canonical input.
 
 `Generator::new` returns `Result` because configuration validation can fail; `with_defaults` cannot fail and is the ergonomic path for tests and the diagnostic harness.
+
+**The configuration fingerprint is not a method on `Generator`.** Section 21.2
+defines it over a `Config`, and nothing in the generation path reads it, so it
+belongs to the crate that owns what a configuration weighs on disk:
+`wgvb_config::fingerprint(algorithm_version, &config)`, re-exported by
+`wgvb-store` because a world file is what writes one. Putting it here would have
+given the core crate `sha2` and `ciborium`, which appendix B does not allow.
 
 Do not expose chunk generation as the primary abstraction. Applications ask directly for a tile.
 
@@ -1095,6 +1168,14 @@ pub enum ConfigError {
     OctaveCount { field: &'static str, octaves: u8 },
     #[error("{field} = {octaves} puts an octave below the Nyquist wavelength")]
     BelowNyquist { field: &'static str, octaves: u8, /* ... */ },
+    #[error("elevation contrast passes must be in 0..=4, got {0}")]
+    PassCount(u8),
+    /// A band ladder whose thresholds do not ascend. The elevation, heat, and
+    /// moisture ladders are compared in order, so an out-of-order threshold is
+    /// a band that can never be reached — evaluable and wrong, which is the
+    /// same shape of defect as `BelowNyquist`.
+    #[error("{field} ({value}) must be greater than {below} ({limit})")]
+    NotAscending { field: &'static str, value: f64, below: &'static str, limit: f64 },
 }
 ```
 
@@ -1250,9 +1331,16 @@ Recommended starting size: `32 x 32` axial-addressed cells.
 The simplest implementation divides `q` and `r` independently:
 
 ```rust
-let chunk_q = (q as i64).div_euclid(CHUNK_SIZE);
-let chunk_r = (r as i64).div_euclid(CHUNK_SIZE);
+// Coord::cell, which chunk, region, and macro-region addressing all share.
+let chunk_q = i64::from(self.q).div_euclid(size);
+let chunk_r = i64::from(self.r).div_euclid(size);
 ```
+
+One method, `Coord::cell(size_hexes) -> (i64, i64)`, serves all three levels,
+with `Coord::cell_offset` for the position inside a cell. The size is `u32` and
+zero is rejected, which is section 24's "assert positivity at the configuration
+boundary" made structural: `div_euclid` is floor division only for a positive
+divisor, and an unsigned non-zero size is the one place that can be guaranteed.
 
 With chunk size `32`:
 
@@ -1407,8 +1495,8 @@ pub struct RegionCoord {
 }
 ```
 
-Introduce caching only after profiling, and note that at Rust's throughput
-(section 31) the profile may well say *don't*. If it is needed, a small
+Introduce caching only after profiling, and be prepared for the profile to say
+*don't* — section 31.1 is how that question gets asked. If it is needed, a small
 direct-mapped array — `[Option<(RegionCoord, RegionParams)>; 64]` indexed by a
 few hash bits — beats a `HashMap` for this access pattern and avoids hashing
 entirely. Either way it lives behind `&self`, so it needs interior mutability
@@ -1429,8 +1517,16 @@ algorithm version + seed + configuration + coordinates
 A WGVB database contains exactly one world and everything needed to reproduce that world's generated baseline.
 
 ```rust
-pub const ALGORITHM_VERSION: u32 = 1;
+pub const ALGORITHM_VERSION: u32 = 5;
 ```
+
+The constant lives in `crates/wgvb/src/lib.rs`, and its doc comment carries the
+version history: what each bump changed and why it had to be a bump. Read that
+before adding a sixth entry. Two of the five bumps — versions 4 and 5 — moved no
+generated value at all and were owed entirely to `Config` gaining fields,
+because section 21.1 forbids `#[serde(default)]` on anything that affects
+generation, so a world file written under the older version genuinely cannot be
+reopened.
 
 The database persists, in singleton world metadata:
 
@@ -1552,24 +1648,23 @@ Persist mutable game and player state as sparse overlays keyed by canonical `(q,
 
 Generated tiles, generated chunks, and PNG files are reproducible caches, not authoritative records, and may be discarded at any time. Any cache entry must carry — and be validated against — the configuration fingerprint and, for rendered output, the palette/render version.
 
-Given the throughput in section 31, **do not build the tile cache in the first
-implementation.** Measure first. A cache that is never faster than regeneration
-is pure liability: a fingerprint to validate and a staleness bug to hit.
+**Do not build the tile cache in the first implementation.** Measure first,
+with section 31.1. A cache that is never faster than regeneration is pure
+liability: a fingerprint to validate and a staleness bug to hit.
 
-**Measured, phase 7: no tile cache.** `crates/wgvb/tests/bench.rs` puts tile
-generation at roughly 130,000 tiles per second per core on an M-series laptop —
-about 7.4 microseconds a tile, near-identical for single tiles, chunk fills, and
-a radius-32 region, which is what a pure function with no shared state should
-look like. A 400x300 diagnostic window is therefore around 0.9 seconds of one
-core, and the scrolling steps in section 29.1 move by half a window.
+**Measured, phase 7: no tile cache.** The three tile rows of the harness agreed
+within ten percent of each other, which is what a pure function with no shared
+state should look like — single tiles, a chunk fill, and a radius-32 region all
+cost about the same per tile, because there is nothing shared between tiles to
+amortize.
 
-That is above the floor and below the hope; see section 31. It is still not an
-argument for the cache, for two reasons. A cache would have to be validated
-against the configuration fingerprint on every hit, and the thing it would save
-is already embarrassingly parallel: section 22 permits a `rayon` batch fill, and
-eight cores is a larger and simpler win than any cache with a coherency story.
-Revisit this when a profile shows the same coordinates being generated
-repeatedly, which a bounded viewport render does not do.
+Two things follow, and neither depends on the absolute figure. A cache would
+have to be validated against the configuration fingerprint on every hit. And the
+work it would save is already embarrassingly parallel: section 22 permits a
+`rayon` batch fill, and the core count is a larger and simpler win than any
+cache with a coherency story. Revisit this when a profile shows the same
+coordinates being generated repeatedly, which a bounded viewport render does not
+do — not when a tile is merely slower than somebody hoped.
 
 **A player's frame is authoritative on the same terms.** The origin hex and
 rotation each player is assigned at creation are not derived from the seed, are
@@ -1594,21 +1689,29 @@ wgvb/
     Cargo.toml                  workspace root; all dependency versions pinned here
     DESIGN.md
     CLAUDE.md
+    README.md
+    docs/renders/               acceptance sheets, by algorithm version
     crates/
         wgvb/                   core generator
             src/
                 lib.rs          Component, WORLD_RADIUS, ALGORITHM_VERSION
-                coord.rs        Coord, normalization, neighbors, rotation, chunks
+                coord.rs        Coord, normalization, neighbors, rotation, cells
                 hash.rs         domain constants, mixers
                 noise.rs        owned noise implementation (private)
-                field.rs        Field enum, fbm, warp
-                config.rs       Config, validation, fingerprint
+                field.rs        Field enum, fbm, warp, sampling offset
+                config.rs       Config, ConfigError, validation
                 generator.rs    Generator, tile, sample, batch
+                tile.rs         Tile and every classification enum
                 elevation.rs
                 climate.rs
+                basin.rs        basin influence and volcanic tendency
                 terrain.rs
                 relief.rs
                 region.rs
+        wgvb-config/            what a configuration weighs: bytes and file
+            src/
+                lib.rs          the TOML file a person edits
+                fingerprint.rs  canonical CBOR and SHA-256
         wgvb-store/             single-world SQLite persistence
             migrations/
                 0001_initial.sql
@@ -1619,24 +1722,40 @@ wgvb/
                 world.rs        World; creation and the opening gates
                 overlay.rs      sparse coordinate-keyed player overlays
                 player.rs       player frames: origin q, origin r, rotation
-                fingerprint.rs  canonical CBOR and SHA-256
         wgvb-render/            bounded viewport rendering; owns the hexx dependency
             src/
-                lib.rs
+                lib.rs          Viewport, Grid, Layer, render, render_player
                 palette.rs      the diagnostic ramp, climate table, terrain list
                 overlay.rs      Overlays; what the player knows
                 frame.rs        PlayerFrame; player-relative <-> canonical
+                distribution.rs Distribution; what is in a window
+        wgvb-view/              the window grammar both web front ends present
+            src/lib.rs          View, Compass, ViewError, seed and query parsing
         wgvb-map/               diagnostic and player-facing CLI
             src/main.rs
         wgvb-serve/             local web viewer for one world, or any seed
             src/
-                lib.rs          routes and the pure request-to-response function
-                view.rs         View; the URL is the whole state
+                lib.rs          the server, PAGE_VERSION, and the ETag inputs
                 source.rs       Source; a stored world, or the defaults
                 page.rs         the one HTML page
-                reply.rs        routing, rendering, and the error mapping
+                reply.rs        routing, rendering, and the ETag
+                error.rs        RequestError and its status mapping
+                main.rs
+        wgvb-tune/              local web instrument for tuning a configuration
+            src/
+                lib.rs          the server, PAGE_VERSION, and the worker pool
+                route.rs        Window, Tab, Target, the evaluation budget
+                session.rs      the one configuration held in memory
+                form.rs         the configuration form and what a POST may change
+                page.rs         the map, grid, and configuration tabs
+                reply.rs        routing, rendering, and the ETag
                 main.rs
 ```
+
+The fingerprint used to live in `wgvb-store/src/fingerprint.rs` and the view
+grammar in `wgvb-serve/src/view.rs`. Both moved out into crates of their own the
+moment a second caller appeared, and the reason each move was worth a crate is
+below.
 
 Rust module privacy is finer-grained than Go's package boundary, so there is no
 `internal/` directory: a module is private unless declared `pub`, and
@@ -1735,12 +1854,28 @@ The database supplies the seed, algorithm version, and effective configuration. 
 
 Before persistence exists, the same rendering code may be driven by an explicitly constructed in-memory generator as a development harness. Such output is diagnostic and does not represent a saved world. Player-facing rendering always loads its effective configuration from the database.
 
-Useful layers:
+The layers, which are `Layer::ALL` in `wgvb-render` and the same names every
+front end takes:
 
 ```text
-elevation, continentalness, temperature, moisture,
-relief, climate, basin, volcanic, terrain, region influence
+continentalness, regional, local, detail, elevation-raw,
+elevation, relief, ridge, roughness, region-influence,
+temperature, moisture, climate,
+basin, volcanic,
+terrain
 ```
+
+Fourteen of those are scalar ramps, `climate` is the two-axis band table, and
+`terrain` is a vocabulary of swatches — which is why `Layer::key` returns one of
+three shapes rather than a ramp with two labels. Four of the ramps are the raw
+noise scales of section 10 and exist to separate "the noise is wrong" from "the
+composition is wrong" when a window looks off; nothing in the generator reads
+them.
+
+`Layer::cost` is the other thing a front end needs from this list: `relief`,
+`climate`, and `terrain` cost seven generator evaluations a tile because they
+read the six neighboring elevations, and every other layer costs one. Section
+29.3's budget is counted in those, not in tiles.
 
 This tool is essential for tuning. Build it early (phase 2), because visual quality cannot be established by unit tests.
 
@@ -1754,7 +1889,7 @@ Rendering notes:
   the whole story and the one place to change it; a test in `wgvb-render` pins
   the mapping, because a mirrored layout would keep every golden pixel passing
   while sending every printed heading the wrong way.
-- Use `hexx` layouts and polygon corners for pixel geometry, and the `png` crate
+- Use `hexx` layouts and hit testing for pixel geometry, and the `png` crate
   for encoding. Never let renderer pixel coordinates feed back into generation.
 - Render coordinates in a stable sorted order. Overlapping edges and labels make
   output order-dependent otherwise.
@@ -1969,7 +2104,9 @@ produced it, and reproduced outside the tuner.
 
 ```text
 GET  /seed/{seed}                  the hex map, drawn as the viewer draws it
+GET  /seed/{seed}/map.png          that window's image
 GET  /seed/{seed}/grid             one pixel per hex, for a very large area
+GET  /seed/{seed}/grid.png         that window's image
 GET  /seed/{seed}/config           the complete effective configuration, as a form
 POST /seed/{seed}/config/fields    apply the form
 POST /seed/{seed}/config/upload    adopt an uploaded or pasted file
@@ -2136,63 +2273,113 @@ Assert on `OpenError` variants, never on message strings.
 
 The `Send + Sync` assertion from section 22 and a `size_of::<Tile>()` bound belong in the test module as compile-time checks.
 
+### 30.13 No Place Is Special
+
+Section 9.4's rule — that no coordinate may be distinguishable by how the
+implementation addresses it — needs a test of its own, and it cannot be a single
+window. At one seed the origin is a bright dot among a handful of others. The
+measurement has to **pool many seeds and compare rings** rather than the centre
+tile alone: ordinary terrain is uncorrelated between worlds and cancels, leaving
+whatever is a function of position relative to the centre, and a single-tile
+assertion would pass as soon as the defect's peak moved one hex.
+
+`crates/wgvb/tests/world_origin.rs` is that measurement, and it asserts more
+than the absence of a halo: that no continuous field is exactly zero at the
+origin, that two worlds do not share a sampling offset, and that the offset does
+not disturb tile identity there. The same shape of test is what section 11.2
+would need if the anchor lattice ever became visible.
+
 ---
 
-## 31. Performance Expectations
+## 31. Performance Measurement
 
-Tile generation must be cheap enough for interactive scrolling.
+This section specifies how throughput is *measured*, not how fast it has to be.
+There is no target here and there should not be one: a threshold written into a
+design becomes a thing to argue with rather than a thing to learn from, and
+every decision this document actually defers to a measurement — the tile cache
+in section 27.6, the region cache in section 26, the render budget in section
+29.3 — needs a number rather than a verdict against a number.
 
-The Go design targeted "tens of thousands of tiles per second". Rust with
-inlined enum-dispatched fields (section 9.1) should exceed that by one to two
-orders of magnitude, so the target is not a useful goal — it is a floor that
-signals something is wrong if missed.
+What the project does need is numbers that are *comparable*: against WGVA, which
+this generator succeeds; against another target, which is the only way section
+25's reproducibility rules are ever really exercised; and against this same
+workspace before a change.
 
-Correctness and visual quality come first. Measure before adding any cache or complexity:
+### 31.1 The harness
 
-```rust
-#[bench] fn bench_tile();
-#[bench] fn bench_chunk();
-#[bench] fn bench_region_radius_32();
+Three timing loops live in `crates/wgvb/tests/bench.rs`:
+
+```text
+bench_tile                 single tiles, one at a time
+bench_chunk                a 32x32 chunk fill through tiles_into
+bench_region_radius_32     a radius-32 region
+bench_relief               relief alone, which is seven elevation evaluations
 ```
 
-They live in `crates/wgvb/tests/bench.rs` as `#[ignore]`d `--release` timing
-loops rather than as `#[bench]` functions, because `#[bench]` is a nightly
-feature and this workspace is pinned to stable:
+They are `#[ignore]`d `--release` timing loops rather than `#[bench]` functions,
+because `#[bench]` is a nightly feature and this workspace is pinned to stable:
 
 ```sh
 cargo test --release -p wgvb --test bench -- --ignored --nocapture
 ```
 
-Use `cargo bench` with `criterion` if statistical rigor is wanted; a plain
-`--release` timing loop is enough to answer the only question that matters early,
-which is whether the tile cache in section 27.6 should exist at all.
+Each prints tile count, elapsed milliseconds, tiles per second, and nanoseconds
+per tile. Reach for `cargo bench` with `criterion` if a change is small enough
+that run-to-run variance could hide it; a plain `--release` timing loop answers
+the questions above.
 
-**Measured, phase 7.** On an M-series laptop, one core:
+The set is chosen so that differences between the rows mean something, which is
+what makes it a measurement rather than a stopwatch:
 
-| measurement | tiles/s | per tile |
-|---|---|---|
-| `bench_tile` | ~127,000 | 7.9 us |
-| `bench_chunk` (32x32 fill) | ~139,000 | 7.2 us |
-| `bench_region_radius_32` | ~136,000 | 7.4 us |
-| `bench_relief` | ~114,000 | 8.8 us |
+- **`bench_tile` against `bench_chunk` and `bench_region_radius_32`** is the
+  batching question. A pure function of its own coordinate has nothing shared to
+  amortize, so these should agree; if batching ever starts winning, something
+  has been introduced that is shared between tiles, and section 20's
+  no-accumulation rule is the first place to look.
+- **`bench_relief` against `bench_tile`** splits the cost in two. Relief is
+  seven elevation evaluations and nothing else; a whole `Tile` is those same
+  seven plus climate, basin influence, volcanic tendency, and terrain. The
+  difference is what classification costs and the quotient is what one elevation
+  evaluation costs, which is the decomposition a profiler would otherwise have
+  to be opened to get.
 
-Two things to read out of that. The three tile measurements agreeing within ten
-percent is the shape a pure function of its own coordinate should have: batching
-buys nothing because there was nothing shared to amortize, which is the same
-property that makes the batch API safe to parallelize.
+### 31.2 What a comparison has to hold fixed
 
-The absolute number is the other thing, and it is an honest miss. This section
-expected Rust to beat the Go design's "tens of thousands" by one to two orders
-of magnitude, and it beats it by well under one. The floor is met and the
-correctness invariants are not in question, but a tile is currently about 7.4
-microseconds of arithmetic, which for a few dozen `f64` field evaluations is
-slow enough to be worth a profile. The likely suspects are the octave ladders in
-section 9.3 and the seven elevation evaluations behind `relief` and `Tile`.
-**This has not been investigated.** It is recorded here so that the next person
-to open the profiler starts from a number rather than from a feeling, and so
-that the expectation above is not left standing unqualified.
+A number from this harness is meaningless beside a number from a different
+build. State all of these with any figure that is going to be compared:
 
----
+- **The algorithm version**, because a version bump can change how many field
+  evaluations a tile costs. Versions 4 and 5 did not; version 3 did.
+- **The configuration**, because octave counts are per field (section 9.3) and
+  the ladder length is most of the arithmetic. A figure measured under
+  `Config::default` should say so.
+- **Release profile, unmodified.** Section 25.7 forbids any flag that relaxes
+  floating-point semantics, and `-C target-cpu=native` is acceptable for local
+  benchmarking only — never for a build whose output is compared against
+  goldens, and never quoted beside a figure from a build without it.
+- **The machine and core count.** Every row above is single-threaded on purpose;
+  section 20's parallel fill is a separate measurement and a separate claim.
+
+### 31.3 Measuring a render rather than a tile
+
+Tile throughput is not what a front end waits on. Both web front ends and
+`wgvb-map --grid` log what each render actually cost — tiles, generate
+milliseconds, encode milliseconds, tiles per second — so a window is measured
+where it is served:
+
+```text
+(1002001 tiles, 405 ms generate, 190 ms encode, 2471232 tiles/s)
+```
+
+That line is also why section 29.3's budget is counted in generator evaluations
+rather than tiles: `relief`, `climate`, and `terrain` cost seven apiece and
+every other layer costs one, so a tile count cannot tell a cheap window from one
+seven times longer. `--budget` raises the bound precisely so that measuring a
+large window is something this tool can be asked to do.
+
+Correctness and visual quality come first, and section 35 still says not to
+optimize before profiling. What this section adds is that the profile should
+start from one of these numbers.
 
 ## 32. Initial Implementation Plan
 
@@ -2263,8 +2450,10 @@ compatibility gates, canonical configuration persistence and fingerprinting, and
 player-facing terrain and overlay PNG composition.
 
 Tune frequencies, weights, thresholds, and warp strengths with the renderer
-throughout the preceding phases, then settle the defaults stored for algorithm
-version 1.
+throughout the preceding phases, then settle the defaults the shipping algorithm
+version stores. Section 21.2 records what settled them: the fingerprint of
+`Config::default` is a written-down constant in
+`crates/wgvb-store/tests/fingerprint.rs`, so moving a default fails that test.
 
 > **Exit:** a database can create, reopen, and reproduce one world safely.
 > Multiple seeds and distant coordinate windows produce varied but coherent maps
@@ -2575,34 +2764,44 @@ Every version is pinned once in the workspace root `Cargo.toml` under `[workspac
 
 | WGVA (Go) | WGVB (Rust) | Notes |
 |---|---|---|
-| `maloquacious/hexg` | `hexx` | `wgvb-render` only. Layouts are `f32` via `glam`; see section 7.1. |
+| `maloquacious/hexg` | `hexx` | `wgvb-render` only, and only for layout, offset conversion, and hit testing. Layouts are `f32` via `glam`; see section 7.1. |
 | unspecified noise | *none — owned* | Section 9.2. |
 | `zombiezen.com/go/sqlite` | `rusqlite` (`bundled`) | Same idiom: direct, non-ORM. |
 | `sqlitemigration` | *none — owned* | ~40-line `user_version` ladder; section 27.4. |
 | `image/png` | `png` | Golden-compare decoded RGBA; section 29. |
 | `flag` | `clap` (derive) | — |
-| `net/http` | `tiny_http` | `wgvb-serve` only; section 29.1. |
-| `math/rand/v2` | `rand` | Non-generation use only; section 8. |
-| `crypto/sha256` | `sha2` | Fingerprint; section 21.2. |
+| `net/http` | `tiny_http` | `wgvb-serve` and `wgvb-tune`; sections 29.1 and 29.3. |
+| `math/rand/v2` | `rand` | Permitted for non-generation use by section 8, and **not currently taken**. Nothing in the workspace needs it: the statistical tests sample deterministic coordinate walks rather than random ones, which is a better test anyway. Adding it is a workspace-dependency decision, not a free one. |
+| `crypto/sha256` | `sha2` | Fingerprint; section 21.2. `wgvb-config` and `wgvb-store`. |
 | `encoding/json` | `ciborium` | Canonical config bytes; section 21.2. |
+| — | `toml` | The configuration file a person edits; sections 29.3 and 21.1. `wgvb-config`, and `wgvb-map` through it. |
 | — | `serde` | Config and `Field` serialization. |
 | — | `thiserror` | Typed error enums; section 19.1. |
-| — | `rayon` | Batch fills only; section 20. |
+| — | `rayon` | Pure per-slot fills only: `wgvb-render`'s `render_grid`, and whatever a caller chooses to do with `tiles_into`. Sections 20 and 29.3. |
 
 The core `wgvb` crate depends on exactly two of these: `serde` and `thiserror`.
 Keep it that way.
 
-`wgvb-serve` additionally appears as a `wgvb-map` **dev**-dependency, and that
-arrow points backwards on purpose. Section 29.1 requires the two front ends to
-render identical bytes, and the test that asserts it has to run the real
-`wgvb-map` binary, which only that package's own tests can locate. No cycle
-exists — `wgvb-serve` does not depend on `wgvb-map` — and it does not appear in
-a consumer's graph.
+Four **dev**-dependencies are worth naming, because each of them is an arrow
+that would be wrong as an ordinary dependency:
 
-`ciborium` additionally appears as a `wgvb` **dev**-dependency. Proving that
-section 21.1's `deny_unknown_fields` and no-`serde(default)` rules actually fire
-needs a real serialization format, and this is the format section 21.2 chose. It
-is not a dependency of the library and does not appear in a consumer's graph.
+- `wgvb-serve` and `wgvb-tune` appear as `wgvb-map` dev-dependencies, and those
+  arrows point backwards on purpose. Sections 29.1 and 29.3 require the front
+  ends to render bytes identical to the CLI's, and the tests that assert it have
+  to run the real `wgvb-map` binary, which only that package's own tests can
+  locate. No cycle exists — neither server depends on `wgvb-map` — and neither
+  appears in a consumer's graph.
+- `ciborium` appears as a `wgvb` dev-dependency. Proving that section 21.1's
+  `deny_unknown_fields` and no-`serde(default)` rules actually fire needs a real
+  serialization format, and this is the format section 21.2 chose.
+- `rayon` appears as a `wgvb` dev-dependency for the same shape of reason.
+  Section 20 *permits* a caller to parallelize a batch fill rather than making
+  the library ship one, and what the library owes that caller is the proof
+  section 30.3 asks for: a rayon fill and a sequential fill agreeing bit for
+  bit. That test needs rayon; a consumer's dependency graph does not.
+
+None of the four is a dependency of any library, and none appears in a
+consumer's graph.
 
 ---
 

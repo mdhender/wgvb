@@ -167,11 +167,14 @@ it is something the player built. A world that records no discoveries at all is
 one where exploration is not being tracked, so nothing is hidden. See
 `DESIGN.md` section 29.2.
 
-A tile is about 7.4 microseconds, so a 400x300 window is roughly 0.9 seconds of
-one core. There is deliberately **no tile cache**: section 27.6 asked for a
-measurement before building one, `crates/wgvb/tests/bench.rs` is that
-measurement, and section 31 records both the numbers and the fact that they are
-below what the design hoped for.
+There is deliberately **no tile cache**: section 27.6 asked for a measurement
+before building one, and `crates/wgvb/tests/bench.rs` is that measurement.
+Section 31 says how to run it and what has to be held fixed for two numbers to
+be comparable:
+
+```sh
+cargo test --release -p wgvb --test bench -- --ignored --nocapture
+```
 
 ## Looking at a seed
 

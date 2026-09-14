@@ -83,10 +83,12 @@ These are the rules most likely to be violated by code that looks correct.
 - The core `wgvb` crate has **no hex library dependency**. It needs only the
   six direction vectors and the `f64` axial-to-world conversion, both pinned by
   the algorithm version.
-- `wgvb-render` uses `hexx` for layouts, polygon corners, hit testing, and
-  traversal. `hexx` layout math is `f32` via `glam` — fine for pixels,
-  unacceptable for the `f64` canonical world space. Keeping `hexx` out of the
-  core crate makes that mistake structurally impossible; do not undo it.
+- `wgvb-render` uses `hexx` for the flat-top layout, offset-coordinate
+  conversion, and hit testing — not for polygon corners, ring or spiral
+  traversal, or its own wraparound. `hexx` layout math is `f32` via `glam` —
+  fine for pixels, unacceptable for the `f64` canonical world space. Keeping
+  `hexx` out of the core crate makes that mistake structurally impossible; do
+  not undo it.
 - Convert `Component` to `hexx::Hex` through one adapter function.
 
 ## Noise and fields
