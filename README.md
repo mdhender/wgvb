@@ -218,6 +218,50 @@ in-memory generator from the seed in the route, not a saved world — and the pa
 says which of the two it is rather than always claiming the first. See
 `DESIGN.md` section 29.1.
 
+## Tuning a world
+
+`wgvb-serve` shows you a world. `wgvb-tune` lets you change one:
+
+```sh
+cargo run --release -p wgvb-tune
+# then open http://127.0.0.1:8081/seed/0123456789abcdef
+```
+
+Three tabs, all of them links you can paste. **map** is the viewer's window,
+with the compass, the layers, and the center-tile readout. **grid** draws one
+pixel per hex — a thousand tiles on a side by default, about a second of eight
+cores — so a continent can be judged in one look. **config** is the complete
+effective configuration as a form: change a field, apply it, and the map redraws
+under it.
+
+```sh
+# start from a configuration you saved earlier
+cargo run --release -p wgvb-tune -- --config tuned.toml --seed feedface
+
+# draw what you tuned, from the command line
+cargo run --release -p wgvb-map -- --config tuned.toml --seed 7 \
+    --q 0 --r 0 --cols 1001 --rows 1001 --grid 1 --layer terrain --out world.png
+```
+
+The configuration is held in memory, not in the URL — a hundred numeric fields
+do not fit in an address bar, which is why this is a second tool rather than a
+mode of the viewer. Every page prints the configuration's fingerprint, the
+config tab downloads the exact file behind it, and `wgvb-map --config` renders
+that file, so a picture can always be traced back and reproduced. **It cannot
+open, create, or write a world**: `wgvb-store` is not in its dependency graph.
+
+Each render logs what it cost — tiles, milliseconds, tiles per second — because
+measuring that is the other half of tuning:
+
+```text
+wgvb-tune: GET /seed/0123456789abcdef/grid.png?... 200
+    (1002001 tiles, 405 ms generate, 190 ms encode, 2471232 tiles/s)
+```
+
+Windows are bounded by a budget counted in generator evaluations rather than
+tiles, since `relief`, `climate`, and `terrain` cost seven apiece; `--budget`
+raises it. See `DESIGN.md` section 29.3.
+
 Continuous fields are not yet periodic across the wrapped edges. That is an
 accepted world-warp seam under section 7.1, documented and measured in
 `crates/wgvb/tests/wrap_seam.rs`.
@@ -228,9 +272,12 @@ accepted world-warp seam under section 7.1, documented and measured in
 |---------------|----------------------------------------------------------|
 | `wgvb`        | Core generator. Stateless, no persistence, no rendering. |
 | `wgvb-store`  | Single-world SQLite persistence.                         |
+| `wgvb-config` | Canonical bytes, fingerprint, and the TOML config file.  |
 | `wgvb-render` | Bounded viewport rendering to PNG.                       |
+| `wgvb-view`   | The URL grammar both web front ends present.             |
 | `wgvb-map`    | Diagnostic and player-facing CLI.                        |
-| `wgvb-serve`  | Local web viewer for one seed.                           |
+| `wgvb-serve`  | Local web viewer for one seed or one saved world.        |
+| `wgvb-tune`   | Local web instrument for tuning a configuration.         |
 
 ## Documents
 

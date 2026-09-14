@@ -16,6 +16,11 @@ repository.workspace = true
 # one weighs on disk.
 [dependencies]
 wgvb.workspace = true
+
+# Canonical configuration bytes and the fingerprint over them. See that
+# crate's manifest: it is the configuration's serialization, not the world's
+# persistence, and `wgvb-tune` needs it without `rusqlite`.
+wgvb-config.workspace = true
 thiserror.workspace = true
 rusqlite.workspace = true
 sha2.workspace = true

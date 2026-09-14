@@ -47,7 +47,8 @@ mod overlay;
 mod palette;
 
 use hexx::{Hex, HexLayout, HexOrientation, OffsetHexMode, Vec2};
-use wgvb::{Component, Coord, Generator, Sample};
+use rayon::prelude::*;
+use wgvb::{Component, Coord, DIRECTION_COUNT, Generator, Sample};
 
 pub use frame::{FrameError, PlayerFrame};
 pub use overlay::Overlays;
@@ -89,6 +90,17 @@ pub const MAX_IMAGE_EDGE: u32 = 32_768;
 /// variants rather than on message strings. See `DESIGN.md` section 19.1.
 #[derive(Debug, thiserror::Error)]
 pub enum RenderError {
+    /// A turn that is not a direction index.
+    ///
+    /// Refused rather than reduced, on the same terms as
+    /// [`FrameError::Rotation`]: a caller that computed `7` computed something
+    /// wrong, and quietly calling it `1` would answer with a world silently
+    /// rotated a sixth of a turn.
+    #[error("turn {0} is not a sixth of a turn in 0..6")]
+    Turn(u8),
+    /// A grid scale below one pixel per tile.
+    #[error("grid scale {0} is below one pixel per tile")]
+    Scale(u32),
     #[error("a viewport must cover at least one tile, got {cols} x {rows}")]
     EmptyViewport { cols: u32, rows: u32 },
     #[error("hex radius must be finite and at least 1 pixel, got {0}")]
@@ -374,6 +386,26 @@ impl Layer {
         }
     }
 
+    /// Generator evaluations one tile of this layer costs, near enough to
+    /// bound a window with.
+    ///
+    /// One for a scalar read out of a [`Sample`]; seven for anything that needs
+    /// the six neighboring elevations, which is [`Layer::Relief`] and the two
+    /// layers that go through a whole [`wgvb::Tile`].
+    ///
+    /// This exists so that a front end can bound the *work* a window costs
+    /// rather than its tile count. A million tiles of `elevation` and a million
+    /// tiles of `terrain` are not the same request, and a budget that could not
+    /// tell them apart would either refuse the cheap one or accept a request
+    /// seven times longer than anybody meant.
+    #[must_use]
+    pub const fn cost(self) -> u32 {
+        match self {
+            Layer::Relief | Layer::Climate | Layer::Terrain => 7,
+            _ => 1,
+        }
+    }
+
     /// This layer's scalar at one coordinate, or `None` if it has none.
     ///
     /// One generator call for every scalar layer but [`Layer::Relief`], which
@@ -451,6 +483,10 @@ pub struct Viewport {
     cols: u32,
     rows: u32,
     hex_radius: f32,
+    /// Sixths of a turn the sampled region is rotated about the center cell.
+    /// Zero for every viewport that does not ask otherwise, and zero is the
+    /// arrangement every golden in this crate was recorded under.
+    turn: u8,
     layout: HexLayout,
     width: u32,
     height: u32,
@@ -523,6 +559,7 @@ impl Viewport {
             cols,
             rows,
             hex_radius,
+            turn: 0,
             layout,
             width,
             height,
@@ -563,16 +600,7 @@ impl Viewport {
             return Err(RenderError::EvenViewport { cols, rows });
         }
 
-        // The center cell of an odd window, and the offset from the first cell
-        // to it. Subtracting in `i64` and letting `Coord` normalize is what
-        // makes a window centered near a wrapped edge ordinary rather than a
-        // special case.
-        let hex = offset_hex(i32_of(cols / 2), i32_of(rows / 2));
-        let origin = Coord::new(
-            i64::from(center.q()) - i64::from(hex.x),
-            i64::from(center.r()) - i64::from(hex.y),
-        );
-        Viewport::new(origin, cols, rows, hex_radius)
+        Viewport::new(first_cell(center, cols, rows), cols, rows, hex_radius)
     }
 
     /// The tile at the viewport's `(0, 0)` offset cell.
@@ -603,6 +631,53 @@ impl Viewport {
         self.hex_radius
     }
 
+    /// Sixths of a turn this viewport's sampled region is rotated by.
+    #[must_use]
+    pub const fn turn(&self) -> u8 {
+        self.turn
+    }
+
+    /// This viewport with its sampled region rotated `turn` sixths about the
+    /// center cell.
+    ///
+    /// A hex grid rotated by a sixth of a turn maps onto itself exactly, so
+    /// this resamples nothing and interpolates nothing: the image is the same
+    /// rectangle of the same cells, and each one names a different tile.
+    /// [`Coord::rotate`] does the arithmetic in integers, which is why no part
+    /// of this can drift between targets the way `DESIGN.md` section 25 is
+    /// about.
+    ///
+    /// **`turn = 0` is the identity**, and deliberately so: every golden in
+    /// this crate and the byte agreement between the CLI and the web front ends
+    /// were all recorded without a turn, and none of them moves because this
+    /// exists.
+    ///
+    /// The pivot is the center cell, so that turning a view and turning it back
+    /// returns to the window it started from rather than sliding across the
+    /// world. That needs a center cell to exist, which is why an even tile
+    /// count is refused here as it is in [`Viewport::centered_on`].
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError::Turn`] for a turn outside `0..6`, and
+    /// [`RenderError::EvenViewport`] for a window with no center cell to pivot
+    /// on. Neither can happen at `turn = 0`, which any window may take.
+    pub fn turned(self, turn: u8) -> Result<Viewport, RenderError> {
+        if turn == 0 {
+            return Ok(Viewport { turn: 0, ..self });
+        }
+        if usize::from(turn) >= DIRECTION_COUNT {
+            return Err(RenderError::Turn(turn));
+        }
+        if self.cols.is_multiple_of(2) || self.rows.is_multiple_of(2) {
+            return Err(RenderError::EvenViewport {
+                cols: self.cols,
+                rows: self.rows,
+            });
+        }
+        Ok(Viewport { turn, ..self })
+    }
+
     /// Image dimensions in pixels.
     #[must_use]
     pub const fn image_size(&self) -> (u32, u32) {
@@ -617,11 +692,7 @@ impl Viewport {
     /// tile twice.
     #[must_use]
     pub fn coord_at(&self, col: u32, row: u32) -> Coord {
-        let hex = offset_hex(i32_of(col), i32_of(row));
-        Coord::new(
-            i64::from(self.origin.q()) + i64::from(hex.x),
-            i64::from(self.origin.r()) + i64::from(hex.y),
-        )
+        sampled(self.origin, self.cols, self.rows, self.turn, col, row)
     }
 
     /// The pixel center of one offset cell.
@@ -685,6 +756,261 @@ impl Viewport {
     pub fn locate(&self, x: u32, y: u32) -> Option<Coord> {
         self.cell_at_pixel(x, y)
             .map(|(col, row)| self.coord_at(col, row))
+    }
+}
+
+/// The first cell of a window centered on one tile.
+///
+/// [`Viewport::new`] takes the window's *first* tile and a viewer names its
+/// middle, so something has to convert, and this is the one place that does.
+/// It is offset-scheme arithmetic, which is why it lives in the crate that owns
+/// the offset scheme rather than in a front end.
+///
+/// Subtracting in `i64` and letting [`Coord`] normalize is what makes a window
+/// centered near a wrapped edge ordinary rather than a special case. The caller
+/// checks that the tile counts are odd; this only does the arithmetic.
+fn first_cell(center: Coord, cols: u32, rows: u32) -> Coord {
+    let hex = offset_hex(i32_of(cols / 2), i32_of(rows / 2));
+    Coord::new(
+        i64::from(center.q()) - i64::from(hex.x),
+        i64::from(center.r()) - i64::from(hex.y),
+    )
+}
+
+/// The tile one cell of a window samples, with the window's turn applied.
+///
+/// Shared by [`Viewport`] and [`Grid`] so that the hex tab and the grid tab
+/// cannot disagree about which tile is in which cell — the whole point of the
+/// grid being a second *rasterizer* rather than a second renderer.
+///
+/// At `turn = 0` this is the addition it always was. Otherwise the delta from
+/// the center cell is rotated by [`Coord::rotate`] and added back to the
+/// center: exact integers, no angle, no matrix, no `f64`. Rotation commutes
+/// with normalization — the canonical domain is six-fold symmetric about the
+/// origin — so normalizing the delta on its way out of [`Coord::new`] cannot
+/// change which tile the sum names.
+fn sampled(origin: Coord, cols: u32, rows: u32, turn: u8, col: u32, row: u32) -> Coord {
+    let hex = offset_hex(i32_of(col), i32_of(row));
+    if turn == 0 {
+        return Coord::new(
+            i64::from(origin.q()) + i64::from(hex.x),
+            i64::from(origin.r()) + i64::from(hex.y),
+        );
+    }
+    let middle = offset_hex(i32_of(cols / 2), i32_of(rows / 2));
+    let delta = Coord::new(
+        i64::from(hex.x) - i64::from(middle.x),
+        i64::from(hex.y) - i64::from(middle.y),
+    )
+    .rotate(i32::from(turn));
+    Coord::new(
+        i64::from(origin.q()) + i64::from(middle.x) + i64::from(delta.q()),
+        i64::from(origin.r()) + i64::from(middle.y) + i64::from(delta.r()),
+    )
+}
+
+/// A window drawn one pixel per hex, for looking at a very large area at once.
+///
+/// The same window walk a [`Viewport`] performs, with the hexagons dropped: the
+/// image is `cols * scale` by `rows * scale` pixels and cell `(col, row)` is the
+/// square at `(col * scale, row * scale)`. Nothing about which tile is in which
+/// cell changes, because [`sampled`] is the same function both types call.
+///
+/// # What this distorts, and what it does not
+///
+/// A hex row's centers are `sqrt(3) * r` apart and a hex column's are
+/// `1.5 * r`, so drawing both as one pixel stretches the image vertically by
+/// about 15%, and the half-hex stagger between columns is flattened away. That
+/// is the whole of the distortion, and it is a fixed anisotropic scale: at
+/// `turn` 0 and 3 the world's axes line up with the screen's and a shape is a
+/// consistently squashed version of itself.
+///
+/// **At `turn` 1, 2, 4, and 5 it is not.** The grid's distortion has two-fold
+/// symmetry while the hex grid has six-fold, so only those two turns lie in
+/// both; the other four shear every feature, and — the part that matters — the
+/// shear introduces apparent directionality that changes with the turn, which
+/// is exactly the artifact somebody rotates a view to look for.
+/// [`Grid::is_sheared`] is that condition, so a front end can say so on the
+/// page rather than leaving a reader to be fooled by it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Grid {
+    origin: Coord,
+    cols: u32,
+    rows: u32,
+    scale: u32,
+    turn: u8,
+}
+
+impl Grid {
+    /// A grid window around a center tile.
+    ///
+    /// Both tile counts must be odd, for the reasons
+    /// [`Viewport::centered_on`] gives and for one more: the turn pivots on the
+    /// center cell, and a window with no center cell has nothing to pivot on.
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError::EmptyViewport`] for a zero tile count,
+    /// [`RenderError::EvenViewport`] for an even one, [`RenderError::Scale`]
+    /// for a scale below one pixel, [`RenderError::Turn`] for a turn outside
+    /// `0..6`, and [`RenderError::TooLarge`] for an image over
+    /// [`MAX_IMAGE_PIXELS`] or [`MAX_IMAGE_EDGE`].
+    ///
+    /// Note what is *not* checked here: how long the window takes to generate.
+    /// A million tiles is a second on eight cores and sixty-four million is a
+    /// minute, and the image caps do not notice the difference. Bounding the
+    /// work is the caller's, because only the caller knows what it is willing
+    /// to wait for.
+    pub fn centered_on(
+        center: Coord,
+        cols: u32,
+        rows: u32,
+        scale: u32,
+        turn: u8,
+    ) -> Result<Grid, RenderError> {
+        if cols == 0 || rows == 0 {
+            return Err(RenderError::EmptyViewport { cols, rows });
+        }
+        if cols.is_multiple_of(2) || rows.is_multiple_of(2) {
+            return Err(RenderError::EvenViewport { cols, rows });
+        }
+        if scale == 0 {
+            return Err(RenderError::Scale(scale));
+        }
+        if usize::from(turn) >= DIRECTION_COUNT {
+            return Err(RenderError::Turn(turn));
+        }
+
+        let width = u64::from(cols) * u64::from(scale);
+        let height = u64::from(rows) * u64::from(scale);
+        if width > u64::from(MAX_IMAGE_EDGE)
+            || height > u64::from(MAX_IMAGE_EDGE)
+            || width * height > MAX_IMAGE_PIXELS
+        {
+            return Err(RenderError::TooLarge {
+                width,
+                height,
+                limit: MAX_IMAGE_PIXELS,
+            });
+        }
+
+        Ok(Grid {
+            origin: first_cell(center, cols, rows),
+            cols,
+            rows,
+            scale,
+            turn,
+        })
+    }
+
+    /// Tile counts across and down.
+    #[must_use]
+    pub const fn tile_counts(&self) -> (u32, u32) {
+        (self.cols, self.rows)
+    }
+
+    /// Pixels per tile on each axis.
+    #[must_use]
+    pub const fn scale(&self) -> u32 {
+        self.scale
+    }
+
+    /// Sixths of a turn the sampled region is rotated by.
+    #[must_use]
+    pub const fn turn(&self) -> u8 {
+        self.turn
+    }
+
+    /// Whether this turn shears the picture. See the type's documentation.
+    #[must_use]
+    pub const fn is_sheared(&self) -> bool {
+        !self.turn.is_multiple_of(3)
+    }
+
+    /// How many tiles this window covers.
+    #[must_use]
+    pub const fn tiles(&self) -> u64 {
+        self.cols as u64 * self.rows as u64
+    }
+
+    /// The tile in the exact center cell.
+    #[must_use]
+    pub fn center(&self) -> Coord {
+        self.coord_at(self.cols / 2, self.rows / 2)
+    }
+
+    /// The absolute coordinate of one cell.
+    #[must_use]
+    pub fn coord_at(&self, col: u32, row: u32) -> Coord {
+        sampled(self.origin, self.cols, self.rows, self.turn, col, row)
+    }
+
+    /// Image dimensions in pixels.
+    #[must_use]
+    pub const fn image_size(&self) -> (u32, u32) {
+        (self.cols * self.scale, self.rows * self.scale)
+    }
+
+    /// Which tile a pixel belongs to, if any.
+    ///
+    /// Integer division rather than hit testing: that is the whole difference
+    /// between this and a [`Viewport`], and it is what lets a front end turn a
+    /// click on a very large image back into a coordinate.
+    #[must_use]
+    pub fn locate(&self, x: u32, y: u32) -> Option<Coord> {
+        let (col, row) = (x / self.scale, y / self.scale);
+        (col < self.cols && row < self.rows).then(|| self.coord_at(col, row))
+    }
+
+    /// Every tile this grid draws, in traversal order.
+    pub fn coords(&self) -> impl Iterator<Item = Coord> + '_ {
+        (0..self.cols).flat_map(move |col| (0..self.rows).map(move |row| self.coord_at(col, row)))
+    }
+}
+
+/// Renders one layer of a grid window, one pixel per hex.
+///
+/// Parallel over columns, which is exactly the parallelism `DESIGN.md`
+/// section 20 grants and CLAUDE.md repeats: every cell is a pure function of its
+/// own coordinate written to its own slot, so the work-stealing split cannot
+/// reach the result. Nothing is accumulated across tiles here — a sum, a
+/// minimum, or a histogram computed this way *would* depend on the split, and
+/// none is.
+///
+/// This is why a grid exists at all: at the 7.4 microseconds a tile costs
+/// today, a thousand-by-thousand window is seven seconds on one core and about
+/// one on eight.
+#[must_use]
+pub fn render_grid(generator: &Generator, grid: &Grid, layer: Layer) -> Image {
+    let (cols, rows) = grid.tile_counts();
+    let mut colors = vec![BACKGROUND; cols as usize * rows as usize];
+    colors
+        .par_chunks_mut(rows as usize)
+        .enumerate()
+        .for_each(|(col, column)| {
+            let col = u32::try_from(col).expect("a column index below the tile count");
+            for (row, slot) in column.iter_mut().enumerate() {
+                let row = u32::try_from(row).expect("a row index below the tile count");
+                *slot = layer.color_at(generator, grid.coord_at(col, row));
+            }
+        });
+
+    let scale = grid.scale();
+    let (width, height) = grid.image_size();
+    let mut rgba = vec![0_u8; width as usize * height as usize * 4];
+    for y in 0..height {
+        let row = (y / scale) as usize;
+        for x in 0..width {
+            let pixel = colors[(x / scale) as usize * rows as usize + row];
+            let start = (y as usize * width as usize + x as usize) * 4;
+            rgba[start..start + 4].copy_from_slice(&pixel);
+        }
+    }
+
+    Image {
+        width,
+        height,
+        rgba,
     }
 }
 

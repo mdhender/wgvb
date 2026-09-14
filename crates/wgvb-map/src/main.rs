@@ -22,7 +22,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use wgvb::{Config, Coord, Generator};
-use wgvb_render::{Layer, Overlays, Viewport, encode_png, render_player};
+use wgvb_render::{Grid, Layer, Overlays, Viewport, encode_png, render_grid, render_player};
 use wgvb_store::{Bounds, World};
 
 /// Render a bounded window of a WGVB world to a PNG.
@@ -75,6 +75,36 @@ struct Args {
     #[arg(long, default_value = "elevation", value_parser = parse_layer)]
     layer: Layer,
 
+    /// Sixths of a turn to rotate the window about its center cell.
+    ///
+    /// Exact: a hex grid rotated by a sixth of a turn maps onto itself, so
+    /// nothing is resampled. Needs odd `--cols` and `--rows`, because the turn
+    /// pivots on the center cell.
+    #[arg(long, default_value_t = 0)]
+    turn: u8,
+
+    /// Draw one pixel per hex instead of hexagons, at this many pixels a side.
+    ///
+    /// For looking at a very large area at once — the sheets under
+    /// `docs/renders/` are made this way. `--hex-radius` is ignored, and
+    /// `--q`/`--r` name the window's *center* rather than its first tile,
+    /// because a grid window is measured in thousands of tiles and counting to
+    /// its corner by hand is not a thing anybody wants to do.
+    ///
+    /// Turns 1, 2, 4, and 5 shear a grid image: the rasterizer's distortion has
+    /// two-fold symmetry and the hex grid has six-fold, so only turn 0 and turn
+    /// 3 line up with it.
+    #[arg(long)]
+    grid: Option<u32>,
+
+    /// Configuration file to render with, instead of this binary's defaults.
+    ///
+    /// Diagnostic only: with `--db` the stored configuration is authoritative
+    /// and naming a file as well is an error, because a world file that
+    /// rendered under somebody else's configuration would not be that world.
+    #[arg(long)]
+    config: Option<PathBuf>,
+
     /// Where to write the PNG.
     #[arg(long)]
     out: PathBuf,
@@ -110,8 +140,13 @@ fn main() -> ExitCode {
 
 /// Does the work, so `main` only chooses an exit code.
 fn run(args: &Args) -> Result<String, Box<dyn std::error::Error>> {
+    if let Some(scale) = args.grid {
+        return run_grid(args, scale);
+    }
+
     let origin = Coord::new(args.q, args.r);
-    let viewport = Viewport::new(origin, args.cols, args.rows, args.hex_radius)?;
+    let viewport =
+        Viewport::new(origin, args.cols, args.rows, args.hex_radius)?.turned(args.turn)?;
 
     let (generator, overlays, provenance) = match &args.db {
         Some(path) => from_world(args, path, &viewport)?,
@@ -124,14 +159,52 @@ fn run(args: &Args) -> Result<String, Box<dyn std::error::Error>> {
 
     let (width, height) = image.size();
     Ok(format!(
-        "wrote {} ({width}x{height} px, {} tiles, layer {}, origin ({}, {}) from ({}, {})); {provenance}",
+        "wrote {} ({width}x{height} px, {} tiles, layer {}, turn {}, origin ({}, {}) from ({}, {})); {provenance}",
         args.out.display(),
         u64::from(args.cols) * u64::from(args.rows),
         args.layer.name(),
+        args.turn,
         origin.q(),
         origin.r(),
         args.q,
         args.r,
+    ))
+}
+
+/// The grid path: one pixel per hex, centered rather than cornered.
+///
+/// No overlays. Fog and settlement markers are a player's view of a world they
+/// are exploring, and this draws a few million tiles at one pixel each; a
+/// marker would be one pixel wide and the window is not one anybody is playing
+/// in. `wgvb-serve` and the hex path are where a player's map is drawn.
+fn run_grid(args: &Args, scale: u32) -> Result<String, Box<dyn std::error::Error>> {
+    if args.db.is_some() {
+        return Err("--grid is a diagnostic render and does not read a world;                     drop --db or drop --grid"
+            .into());
+    }
+    let center = Coord::new(args.q, args.r);
+    let grid = Grid::centered_on(center, args.cols, args.rows, scale, args.turn)?;
+
+    let generator = from_seed(args)?;
+    let image = render_grid(&generator, &grid, args.layer);
+    let bytes = encode_png(&image)?;
+    std::fs::write(&args.out, &bytes)?;
+
+    let (width, height) = image.size();
+    Ok(format!(
+        "wrote {} ({width}x{height} px, {} tiles at {scale} px each, layer {}, turn {},          center ({}, {})); {}{}",
+        args.out.display(),
+        grid.tiles(),
+        args.layer.name(),
+        args.turn,
+        center.q(),
+        center.r(),
+        diagnostic_note(args),
+        if grid.is_sheared() {
+            "; turn is sheared, see --help"
+        } else {
+            ""
+        },
     ))
 }
 
@@ -140,15 +213,26 @@ fn from_seed(args: &Args) -> Result<Generator, Box<dyn std::error::Error>> {
     if !args.discover.is_empty() || !args.settle.is_empty() {
         return Err("--discover and --settle write player state, which needs --db".into());
     }
-    Ok(Generator::with_defaults(args.seed.unwrap_or(0)))
+    let config = match &args.config {
+        None => Config::default(),
+        Some(path) => wgvb_config::from_toml(&std::fs::read_to_string(path)?)?,
+    };
+    Ok(Generator::new(args.seed.unwrap_or(0), config)?)
 }
 
 /// What the diagnostic path should say about itself.
 fn diagnostic_note(args: &Args) -> String {
-    format!(
-        "diagnostic render of seed {} with program defaults, not a saved world",
-        args.seed.unwrap_or(0)
-    )
+    match &args.config {
+        None => format!(
+            "diagnostic render of seed {} with program defaults, not a saved world",
+            args.seed.unwrap_or(0)
+        ),
+        Some(path) => format!(
+            "diagnostic render of seed {} with the configuration in {}, not a saved world",
+            args.seed.unwrap_or(0),
+            path.display(),
+        ),
+    }
 }
 
 /// The player path: the database is authoritative for everything about the
@@ -158,6 +242,10 @@ fn from_world(
     path: &std::path::Path,
     viewport: &Viewport,
 ) -> Result<(Generator, Overlays, String), Box<dyn std::error::Error>> {
+    if args.config.is_some() {
+        return Err("a stored world's configuration is authoritative;                     --config cannot override it"
+            .into());
+    }
     let world = World::open_or_create(path, args.seed.unwrap_or(0), &Config::default())?;
 
     // A stored world never takes a seed from the command line. Saying so is

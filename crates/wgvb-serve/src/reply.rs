@@ -10,10 +10,12 @@ use wgvb::{ALGORITHM_VERSION, Generator};
 use wgvb_render::{Overlays, RENDER_VERSION, Viewport, encode_png, render_player};
 use wgvb_store::{Bounds, World};
 
+use wgvb_view::{Route, View};
+
 use crate::PAGE_VERSION;
+use crate::error::RequestError;
 use crate::page::page;
 use crate::source::Source;
-use crate::view::{RequestError, Route, View};
 
 /// `text/html`, as this server writes it.
 pub const HTML: &str = "text/html; charset=utf-8";
@@ -94,7 +96,7 @@ pub fn reply_from(target: &str, source: &Source) -> Reply {
             Ok(reply) => reply,
             Err(error) => refuse(&error),
         },
-        Err(error) => refuse(&error),
+        Err(error) => refuse(&RequestError::from(error)),
     }
 }
 
@@ -105,7 +107,7 @@ pub fn reply_from(target: &str, source: &Source) -> Reply {
 /// in the route is the source of the world; a server with one serves exactly
 /// the world it holds, because the seed in the route is a check against it.
 fn draw(route: Route, view: &View, source: &Source) -> Result<Reply, RequestError> {
-    let viewport = view.viewport()?;
+    let viewport = view.viewport().map_err(wgvb_view::ViewError::from)?;
     match source {
         Source::Defaults { .. } => {
             // One generator per request, built before the route is chosen: the
@@ -161,7 +163,7 @@ fn compose(
             Ok(Reply {
                 status: 200,
                 content_type: PNG,
-                body: encode_png(&image)?,
+                body: encode_png(&image).map_err(wgvb_view::ViewError::from)?,
                 // No tag for a world-backed image, and that is the honest
                 // answer rather than an omission. A strong `ETag` promises the
                 // bytes are a pure function of everything it names, and a

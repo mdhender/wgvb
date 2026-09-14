@@ -1,0 +1,27 @@
+[package]
+name = "wgvb-view"
+description = "The URL grammar a WGVB web front end presents: windows, scroll controls, and refusals"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+# Two HTTP front ends exist — `wgvb-serve`, which looks at a saved world, and
+# `wgvb-tune`, which holds a configuration in memory — and without this crate
+# there would be two copies of the view grammar. That grammar is not markup:
+# it encodes invariants with tests behind them, notably that a scroll step is a
+# whole number of hexes and that a step followed by its opposite returns to
+# exactly the coordinate it started from. One copy, one set of tests.
+#
+# It depends on `wgvb` and `wgvb-render` and on nothing else. In particular it
+# does not depend on `wgvb-store`, which is what lets `wgvb-tune` use it
+# without a database in its dependency graph at all.
+[dependencies]
+wgvb.workspace = true
+wgvb-render.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

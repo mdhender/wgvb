@@ -8,9 +8,9 @@ use std::time::Duration;
 use rusqlite::{Connection, OpenFlags};
 use wgvb::{ALGORITHM_VERSION, Config, Generator, Seed};
 
-use crate::fingerprint::{Fingerprint, canonical_config_bytes, fingerprint_of_bytes};
 use crate::schema::{SCHEMA_VERSION, application_id, migrate, user_version};
 use crate::{APPLICATION_ID, OpenError};
+use wgvb_config::{Fingerprint, canonical_config_bytes, fingerprint_of_bytes};
 
 /// One database, one world.
 ///

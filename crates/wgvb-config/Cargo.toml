@@ -1,0 +1,40 @@
+[package]
+name = "wgvb-config"
+description = "The WGVB configuration file: canonical bytes, fingerprint, and a TOML form a person can edit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+# What a configuration *weighs* — its canonical CBOR, its fingerprint, and the
+# TOML file a person edits and a tool reads back — as against what a
+# configuration *is*, which is `wgvb`'s. Splitting it here rather than leaving
+# it in `wgvb-store` is what lets `wgvb-tune` name a fingerprint without
+# `rusqlite` in its dependency graph, and it keeps one implementation of the
+# fingerprint rather than two.
+[dependencies]
+wgvb.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+
+# Canonical serialization, per DESIGN.md section 21.2. Binary and fixed in
+# field order, which is what a fingerprint needs.
+ciborium.workspace = true
+sha2.workspace = true
+
+# The file a person edits, which is a different job from the fingerprint's and
+# wants a different format. TOML because it round-trips an `f64` exactly, keeps
+# `deny_unknown_fields` working so a stale file is rejected rather than half
+# applied, and takes comments — which JSON does not, and which matter for a
+# file somebody keeps notes in.
+toml.workspace = true
+
+[lints]
+workspace = true
+
+# The tests read back what they wrote and compare tables, which needs the same
+# parser the library uses.
+[dev-dependencies]
+toml.workspace = true

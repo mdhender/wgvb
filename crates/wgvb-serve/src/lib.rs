@@ -60,10 +60,10 @@
 //! which are mutable player state with no version anywhere in the system. See
 //! `DESIGN.md` section 29.2.
 
+mod error;
 mod page;
 mod reply;
 mod source;
-mod view;
 
 use std::io;
 use std::net::{IpAddr, ToSocketAddrs};
@@ -72,12 +72,18 @@ use std::thread;
 
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
+pub use error::RequestError;
 pub use page::page;
 pub use reply::{HTML, PNG, Reply, TEXT, reply, reply_from};
 pub use source::Source;
-pub use view::{
+
+// The window grammar lives in `wgvb-view`, which the tuner shares. It is
+// re-exported rather than merely used, because `wgvb_serve::View` is what this
+// crate's tests and `wgvb-map`'s agreement test already name, and because a
+// caller of this crate should not have to know which crate spells `?cols=`.
+pub use wgvb_view::{
     Axis, COMPASS, Compass, DEFAULT_COLS, DEFAULT_HEX_RADIUS, DEFAULT_ROWS, MAX_COLS,
-    MAX_HEX_RADIUS, MAX_ROWS, MIN_HEX_RADIUS, RequestError, Route, View,
+    MAX_HEX_RADIUS, MAX_ROWS, MIN_HEX_RADIUS, Route, View, ViewError,
 };
 
 /// How the server was asked to listen, and what it was asked to show.

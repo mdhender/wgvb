@@ -19,6 +19,12 @@ path = "src/main.rs"
 [dependencies]
 wgvb.workspace = true
 wgvb-render.workspace = true
+
+# The window grammar, shared with `wgvb-tune`. See that crate's manifest for
+# why it is a crate: two front ends, one set of invariants about what a scroll
+# step means.
+wgvb-view.workspace = true
+
 clap.workspace = true
 thiserror.workspace = true
 

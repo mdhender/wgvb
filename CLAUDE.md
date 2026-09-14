@@ -193,11 +193,22 @@ These are the rules most likely to be violated by code that looks correct.
 wgvb-map    ->  wgvb-render  ->  wgvb
     |               |
     +-> wgvb-store ----------->  wgvb
+    +-> wgvb-config ---------->  wgvb
 
-wgvb-serve  ->  wgvb-render  ->  wgvb
+wgvb-serve  ->  wgvb-view -> wgvb-render  ->  wgvb
     |               |
     +-> wgvb-store ----------->  wgvb
+
+wgvb-tune   ->  wgvb-view -> wgvb-render  ->  wgvb
+    |
+    +-> wgvb-config ---------->  wgvb
 ```
+
+- `wgvb-view` owns the window grammar both web front ends present; `wgvb-config`
+  owns the canonical bytes, the fingerprint, and the TOML configuration file.
+- **`wgvb-tune` must never depend on `wgvb-store`.** That edge's absence is what
+  makes "the tuner cannot open or write a world" a compile-time fact. It is the
+  same trick that keeps persistence out of the core.
 
 - `crates/wgvb` depends on exactly `serde` and `thiserror`. **Do not add a
   dependency to the core crate without stating why in the commit message.** The

@@ -1,9 +1,31 @@
-//! The viewer's state, which is entirely a URL.
+//! The URL grammar a WGVB web front end presents.
 //!
-//! Every state this server can present is reachable by typing a link, and every
-//! link it emits parses back to the state that produced it. That is the whole
-//! design: no client-side panning, no canvas, no script, and therefore nothing
-//! to get out of step with the address bar.
+//! A [`View`] is a window into the world — a seed, a center tile, a tile count,
+//! a pixel scale, and a layer — together with the parsing that turns a request
+//! target into one and the spelling that turns one back into a link. Every link
+//! a front end emits parses back to the state that produced it: no client-side
+//! panning, no canvas, no script, and therefore nothing to get out of step with
+//! the address bar.
+//!
+//! # Why this is a crate and not a module
+//!
+//! There are two front ends. `wgvb-serve` looks at a saved world and keeps the
+//! promise that *every* state it can be in is a URL; `wgvb-tune` holds a
+//! configuration in memory, because a hundred-field form does not fit in an
+//! address bar. They present different pages and different route tables, and
+//! without this crate they would present two copies of the same window grammar.
+//!
+//! That grammar is not markup. It encodes invariants with tests behind them —
+//! a scroll step is a whole number of hexes, a step followed by its opposite
+//! returns to exactly the coordinate it started from, and north is absolute
+//! direction 2 — and two copies of an invariant is one copy and one liability.
+//!
+//! # What is not here
+//!
+//! The route table. `/seed/{seed}` and `/seed/{seed}/map.png` are the viewer's
+//! two routes and live with [`Route`]; the tuner has tabs of its own and builds
+//! them from [`seed_route`] instead. A front end owns its own paths and shares
+//! everything below them.
 
 use std::fmt;
 
@@ -36,12 +58,13 @@ pub const MIN_HEX_RADIUS: f32 = 1.0;
 /// Largest hex radius the server will draw, in pixels.
 pub const MAX_HEX_RADIUS: f32 = 48.0;
 
-/// The query parameters this server understands.
+/// The query parameters a [`View`] is made of.
 ///
-/// An unrecognized parameter is rejected rather than ignored, for the same
-/// reason `Config` carries `deny_unknown_fields`: a silently dropped `?col=61`
-/// looks exactly like a server that does not work.
-const KNOWN_PARAMETERS: [&str; 6] = ["q", "r", "cols", "rows", "hex-radius", "layer"];
+/// A front end passes this, plus whatever it adds, to [`reject_unknown`]: an
+/// unrecognized parameter is refused rather than ignored, for the same reason
+/// `Config` carries `deny_unknown_fields`: a silently dropped `?col=61` looks
+/// exactly like a server that does not work.
+pub const KNOWN_PARAMETERS: [&str; 6] = ["q", "r", "cols", "rows", "hex-radius", "layer"];
 
 /// Which window dimension a scroll step is measured in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,8 +166,13 @@ pub const COMPASS: [Compass; 6] = [
 ///
 /// Every variant names the parameter it is complaining about, because the
 /// person reading it is looking at a URL they typed.
+///
+/// Everything here is something about a *URL*. A front end with refusals of its
+/// own — a seed that is not the one a database holds, a database that stopped
+/// answering — wraps this in an error of its own rather than adding a variant
+/// here that only one caller can ever construct.
 #[derive(Debug, thiserror::Error)]
-pub enum RequestError {
+pub enum ViewError {
     #[error("no route for {path}; try /seed/0123456789abcdef")]
     NoRoute { path: String },
     #[error("seed {seed:?} is {got} characters; a seed is exactly 16 hexadecimal digits")]
@@ -182,36 +210,21 @@ pub enum RequestError {
     UnknownParameter { name: String, known: String },
     #[error("the window cannot be drawn: {0}")]
     Unrenderable(#[from] RenderError),
-    #[error(
-        "this server holds the world with seed {stored:016x}, not {asked:016x}; \
-         try /seed/{stored:016x}"
-    )]
-    OtherWorld { asked: Seed, stored: Seed },
-    #[error("the world database could not be read: {0}")]
-    World(String),
 }
 
-impl RequestError {
+impl ViewError {
     /// The HTTP status this refusal answers with.
     ///
-    /// Almost everything here is the caller's fault, so almost nothing here is
-    /// a 500. A window too large for [`wgvb_render::MAX_IMAGE_PIXELS`]
-    /// included: the caller chose the size.
+    /// Everything here is the caller's fault, so nothing here is a 500. A
+    /// window too large for [`wgvb_render::MAX_IMAGE_PIXELS`] included: the
+    /// caller chose the size.
     ///
-    /// Two exceptions, and each is its own kind:
-    ///
-    /// - [`RequestError::OtherWorld`] is a 404. A server holding one world does
-    ///   not have the seed that was asked for, and "not found" is what that is;
-    ///   the message names the seed it does have, so the fix is a link away.
-    /// - [`RequestError::World`] is a 500, and it is the only one. A database
-    ///   that stops answering is the server's problem, not the caller's, and
-    ///   reporting it as a 400 would send somebody looking at their URL for a
-    ///   mistake that is not in it.
+    /// The one thing that is not a 400 is a path that names no route, which is
+    /// a 404 because that is what "no route" means.
     #[must_use]
     pub const fn status(&self) -> u16 {
         match self {
-            RequestError::NoRoute { .. } | RequestError::OtherWorld { .. } => 404,
-            RequestError::World(_) => 500,
+            ViewError::NoRoute { .. } => 404,
             _ => 400,
         }
     }
@@ -268,27 +281,31 @@ impl View {
     ///
     /// # Errors
     ///
-    /// Every malformed piece of a URL is a [`RequestError`] naming the piece.
+    /// Every malformed piece of a URL is a [`ViewError`] naming the piece.
     /// Nothing here defaults silently and nothing here panics.
-    pub fn parse(target: &str) -> Result<(Route, View), RequestError> {
+    pub fn parse(target: &str) -> Result<(Route, View), ViewError> {
         let (path, query) = split_target(target);
         let (route, seed_text) = parse_route(path)?;
+        reject_unknown(query, &KNOWN_PARAMETERS)?;
         let view = View::from_query(parse_seed(seed_text)?, query)?;
         Ok((route, view))
     }
 
     /// Parses the query string of a request against this seed.
-    fn from_query(seed: Seed, query: &str) -> Result<View, RequestError> {
+    ///
+    /// Public because a front end with a route table of its own — the tuner's
+    /// tabs, rather than the viewer's two paths — still wants exactly this
+    /// window grammar underneath it.
+    ///
+    /// Unknown parameters are *not* rejected here. A front end that adds
+    /// parameters of its own knows its own vocabulary, so it calls
+    /// [`reject_unknown`] with it; [`View::parse`] does that for the viewer's.
+    ///
+    /// # Errors
+    ///
+    /// Every malformed value is a [`ViewError`] naming the parameter.
+    pub fn from_query(seed: Seed, query: &str) -> Result<View, ViewError> {
         let mut view = View::origin_of(seed);
-
-        for (key, _) in pairs(query) {
-            if !KNOWN_PARAMETERS.contains(&key.as_str()) {
-                return Err(RequestError::UnknownParameter {
-                    name: key,
-                    known: KNOWN_PARAMETERS.join(", "),
-                });
-            }
-        }
 
         let q = lookup(query, "q");
         let r = lookup(query, "r");
@@ -297,13 +314,13 @@ impl View {
                 view.center = Coord::new(component("q", q)?, component("r", r)?);
             }
             (Some(_), None) => {
-                return Err(RequestError::HalfACenter {
+                return Err(ViewError::HalfACenter {
                     present: "q",
                     missing: "r",
                 });
             }
             (None, Some(_)) => {
-                return Err(RequestError::HalfACenter {
+                return Err(ViewError::HalfACenter {
                     present: "r",
                     missing: "q",
                 });
@@ -321,7 +338,7 @@ impl View {
             view.hex_radius = radius("hex-radius", &text)?;
         }
         if let Some(text) = lookup(query, "layer") {
-            view.layer = Layer::parse(&text).map_err(|_| RequestError::UnknownLayer {
+            view.layer = Layer::parse(&text).map_err(|_| ViewError::UnknownLayer {
                 name: text.clone(),
                 known: Layer::ALL
                     .iter()
@@ -375,19 +392,34 @@ impl View {
     /// The URL of the viewer page showing this view.
     #[must_use]
     pub fn page_url(&self) -> String {
-        format!("/seed/{:016x}?{}", self.seed, self.query())
+        self.url("")
+    }
+
+    /// This view's URL under one path below `/seed/{seed}`.
+    ///
+    /// `""` is the page itself, `"/map.png"` the image, and a front end with
+    /// tabs of its own passes `"/grid"` or `"/config"`. The seed and the window
+    /// are spelled in exactly one place whatever the path is, which is what
+    /// stops two tabs disagreeing about how to write a coordinate.
+    #[must_use]
+    pub fn url(&self, path: &str) -> String {
+        format!("/seed/{:016x}{path}?{}", self.seed, self.query())
     }
 
     /// The URL of the rendered window on its own.
     #[must_use]
     pub fn image_url(&self) -> String {
-        format!("/seed/{:016x}/map.png?{}", self.seed, self.query())
+        self.url("/map.png")
     }
 
-    /// The query string both URLs carry. Always complete: a link this server
+    /// The query string every URL carries. Always complete: a link a front end
     /// emits never relies on a default, so following it cannot change meaning
     /// when a default does.
-    fn query(&self) -> String {
+    ///
+    /// A front end with parameters of its own appends them to this rather than
+    /// respelling it.
+    #[must_use]
+    pub fn query(&self) -> String {
         format!(
             "q={}&r={}&cols={}&rows={}&hex-radius={}&layer={}",
             self.center.q(),
@@ -419,16 +451,66 @@ impl fmt::Display for View {
     }
 }
 
+/// Rejects any parameter a front end does not understand.
+///
+/// An unrecognized parameter is refused rather than ignored, for the same
+/// reason [`wgvb::Config`] carries `deny_unknown_fields`: a silently dropped
+/// `?col=61` looks exactly like a front end that does not work.
+///
+/// `known` is the caller's whole vocabulary, [`KNOWN_PARAMETERS`] plus whatever
+/// it adds, because only the caller knows what its own pages accept.
+///
+/// # Errors
+///
+/// [`ViewError::UnknownParameter`], naming the parameter and listing the ones
+/// that would have worked.
+pub fn reject_unknown(query: &str, known: &[&str]) -> Result<(), ViewError> {
+    for (key, _) in pairs(query) {
+        if !known.contains(&key.as_str()) {
+            return Err(ViewError::UnknownParameter {
+                name: key,
+                known: known.join(", "),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Splits a request target into its path and its query string.
-fn split_target(target: &str) -> (&str, &str) {
+#[must_use]
+pub fn split_target(target: &str) -> (&str, &str) {
     match target.split_once('?') {
         Some((path, query)) => (path, query),
         None => (target, ""),
     }
 }
 
+/// Splits a `/seed/{seed}/...` path into the seed and whatever follows it.
+///
+/// The shared half of a route table: every path either front end serves starts
+/// this way, and what comes after it is the front end's own business — `""` for
+/// a page, `"/map.png"` for an image, `"/grid"` or `"/config"` for a tab the
+/// tuner has and the viewer does not.
+///
+/// A trailing slash is trimmed, so `/seed/{seed}/` is the page.
+///
+/// # Errors
+///
+/// [`ViewError::NoRoute`] for a path that does not start `/seed/`, and whatever
+/// [`parse_seed`] refuses for the digits that follow.
+pub fn seed_route(path: &str) -> Result<(Seed, &str), ViewError> {
+    let trimmed = path.strip_suffix('/').unwrap_or(path);
+    let rest = trimmed
+        .strip_prefix("/seed/")
+        .ok_or_else(|| ViewError::NoRoute {
+            path: path.to_string(),
+        })?;
+    let cut = rest.find('/').unwrap_or(rest.len());
+    Ok((parse_seed(&rest[..cut])?, &rest[cut..]))
+}
+
 /// Matches a path against the two routes, returning the seed text it carries.
-fn parse_route(path: &str) -> Result<(Route, &str), RequestError> {
+fn parse_route(path: &str) -> Result<(Route, &str), ViewError> {
     let trimmed = path.strip_suffix('/').unwrap_or(path);
     if let Some(rest) = trimmed.strip_prefix("/seed/") {
         if let Some(seed) = rest.strip_suffix("/map.png") {
@@ -438,30 +520,35 @@ fn parse_route(path: &str) -> Result<(Route, &str), RequestError> {
             return Ok((Route::Page, rest));
         }
     }
-    Err(RequestError::NoRoute {
+    Err(ViewError::NoRoute {
         path: path.to_string(),
     })
 }
 
 /// Parses the sixteen hexadecimal digits of a seed.
 ///
+/// # Errors
+///
+/// [`ViewError::SeedLength`] or [`ViewError::SeedDigits`], each quoting back
+/// what was written.
+///
 /// Hex because that is how a seed is written everywhere else in the repository:
 /// `0x0123_4567_89ab_cdef` is the golden seed and `/seed/0123456789abcdef` is
 /// the same number. Case-insensitive, no `0x`, exactly sixteen digits, and
 /// anything else is a refusal rather than a silent zero.
-fn parse_seed(text: &str) -> Result<Seed, RequestError> {
+pub fn parse_seed(text: &str) -> Result<Seed, ViewError> {
     if text.len() != 16 {
-        return Err(RequestError::SeedLength {
+        return Err(ViewError::SeedLength {
             seed: text.to_string(),
             got: text.chars().count(),
         });
     }
     if !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(RequestError::SeedDigits {
+        return Err(ViewError::SeedDigits {
             seed: text.to_string(),
         });
     }
-    Seed::from_str_radix(text, 16).map_err(|_| RequestError::SeedDigits {
+    Seed::from_str_radix(text, 16).map_err(|_| ViewError::SeedDigits {
         seed: text.to_string(),
     })
 }
@@ -472,14 +559,14 @@ fn parse_seed(text: &str) -> Result<Seed, RequestError> {
 /// link this server emits is already canonical, so a number outside the range
 /// came from somewhere else and the reader deserves to be told, not to be shown
 /// a different tile than the one they named.
-fn component(parameter: &'static str, text: &str) -> Result<i64, RequestError> {
-    let value: i64 = text.parse().map_err(|_| RequestError::NotAnInteger {
+fn component(parameter: &'static str, text: &str) -> Result<i64, ViewError> {
+    let value: i64 = text.parse().map_err(|_| ViewError::NotAnInteger {
         parameter,
         value: text.to_string(),
     })?;
     let (min, max) = (i64::from(Component::MIN), i64::from(Component::MAX));
     if value < min || value > max {
-        return Err(RequestError::CoordinateRange {
+        return Err(ViewError::CoordinateRange {
             parameter,
             value,
             min,
@@ -489,13 +576,26 @@ fn component(parameter: &'static str, text: &str) -> Result<i64, RequestError> {
     Ok(value)
 }
 
-/// Parses a tile count and clamps it into the range this server will draw.
+/// Parses a tile count and clamps it into the range a front end will draw.
 ///
-/// Clamped rather than refused, because the bound is a property of this server
-/// and not of the request: the caller asked for a window, and a window is what
-/// they get. What is refused is a value that is not a number at all.
-fn count(parameter: &'static str, text: &str, max: u32) -> Result<u32, RequestError> {
-    let value: i64 = text.parse().map_err(|_| RequestError::NotAnInteger {
+/// Clamped rather than refused, because the bound is a property of the front
+/// end and not of the request: the caller asked for a window, and a window is
+/// what they get. What is refused is a value that is not a number at all.
+///
+/// `max` is the caller's, because the two front ends do not agree on one: the
+/// viewer draws hexagons and stops at a couple of hundred tiles a side, and the
+/// tuner draws single pixels and goes to a couple of thousand.
+///
+/// # Errors
+///
+/// [`ViewError::NotAnInteger`] for text that is not a whole number.
+pub fn tile_count(parameter: &'static str, text: &str, max: u32) -> Result<u32, ViewError> {
+    count(parameter, text, max)
+}
+
+/// Parses a tile count and clamps it into the range this server will draw.
+fn count(parameter: &'static str, text: &str, max: u32) -> Result<u32, ViewError> {
+    let value: i64 = text.parse().map_err(|_| ViewError::NotAnInteger {
         parameter,
         value: text.to_string(),
     })?;
@@ -504,13 +604,13 @@ fn count(parameter: &'static str, text: &str, max: u32) -> Result<u32, RequestEr
 }
 
 /// Parses a hex radius and clamps it into the range this server will draw.
-fn radius(parameter: &'static str, text: &str) -> Result<f32, RequestError> {
-    let value: f32 = text.parse().map_err(|_| RequestError::NotANumber {
+fn radius(parameter: &'static str, text: &str) -> Result<f32, ViewError> {
+    let value: f32 = text.parse().map_err(|_| ViewError::NotANumber {
         parameter,
         value: text.to_string(),
     })?;
     if !value.is_finite() {
-        return Err(RequestError::NotANumber {
+        return Err(ViewError::NotANumber {
             parameter,
             value: text.to_string(),
         });
@@ -519,14 +619,15 @@ fn radius(parameter: &'static str, text: &str) -> Result<f32, RequestError> {
 }
 
 /// The first value a query string gives for one key.
-fn lookup(query: &str, key: &str) -> Option<String> {
+#[must_use]
+pub fn lookup(query: &str, key: &str) -> Option<String> {
     pairs(query)
         .find(|(name, _)| name == key)
         .map(|(_, value)| value)
 }
 
 /// Every `key=value` pair of a query string, percent-decoded.
-fn pairs(query: &str) -> impl Iterator<Item = (String, String)> + '_ {
+pub fn pairs(query: &str) -> impl Iterator<Item = (String, String)> + '_ {
     query
         .split('&')
         .filter(|part| !part.is_empty())
@@ -538,12 +639,17 @@ fn pairs(query: &str) -> impl Iterator<Item = (String, String)> + '_ {
 
 /// Percent-decodes one query component, treating `+` as a space.
 ///
+/// Public because a front end that reads a form body reads exactly this
+/// encoding: `application/x-www-form-urlencoded` is a query string that
+/// arrived in a body rather than in a path.
+///
 /// Nothing this viewer emits needs encoding — seeds are hex digits, coordinates
 /// are decimal, layer names are ASCII — but a URL that has been through a
 /// browser, a chat client, or an issue tracker may well arrive encoded anyway.
 /// Invalid escapes are left as written rather than dropped, so an error message
 /// quotes back what was actually sent.
-fn decode(text: &str) -> String {
+#[must_use]
+pub fn decode(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut index = 0;

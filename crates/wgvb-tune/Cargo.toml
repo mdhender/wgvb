@@ -1,0 +1,36 @@
+[package]
+name = "wgvb-tune"
+description = "A local web instrument for tuning a WGVB configuration"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+name = "wgvb_tune"
+path = "src/lib.rs"
+
+[[bin]]
+name = "wgvb-tune"
+path = "src/main.rs"
+
+# Note what is *not* here: `wgvb-store`. The tuner cannot open a world, create
+# one, or write to one, and that is a property of this file rather than a
+# promise in a document or an assertion in a test. The only file it produces is
+# a configuration somebody asked it to download.
+[dependencies]
+wgvb.workspace = true
+wgvb-render.workspace = true
+wgvb-view.workspace = true
+wgvb-config.workspace = true
+clap.workspace = true
+thiserror.workspace = true
+tiny_http.workspace = true
+
+[dev-dependencies]
+png.workspace = true
+
+[lints]
+workspace = true

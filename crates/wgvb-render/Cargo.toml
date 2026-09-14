@@ -14,6 +14,16 @@ thiserror.workspace = true
 hexx.workspace = true
 png.workspace = true
 
+# `rayon` parallelizes `render_grid`, and only that. DESIGN.md section 20 and
+# section 22 grant exactly this: every cell of a render is a pure function of
+# its own coordinate written to its own slot, so a work-stealing split cannot
+# reach the result and a parallel fill is bit-identical to a sequential one.
+# The permission is narrow on purpose — nothing here may accumulate across
+# tiles, because a sum or a histogram computed this way *would* depend on the
+# split. A grid window is a million tiles and seven seconds of one core; that
+# is what this is for.
+rayon.workspace = true
+
 # `png` is already a dependency for encoding; the decoder side is used only by
 # tests, which section 29 requires to compare decoded RGBA rather than file
 # bytes.

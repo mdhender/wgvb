@@ -16,19 +16,22 @@
 //! of them is stored: section 27.6 says to measure before building a tile
 //! cache, and `tests/bench.rs` in the core crate is that measurement.
 
-mod fingerprint;
 mod overlay;
 mod player;
 mod schema;
 mod world;
 
-pub use fingerprint::{
-    CanonicalError, FINGERPRINT_LEN, Fingerprint, canonical_config_bytes, fingerprint,
-    fingerprint_of_bytes,
-};
+// The fingerprint moved to `wgvb-config` when `wgvb-tune` needed one without a
+// database in its dependency graph. It is re-exported rather than merely moved,
+// because a fingerprint is what this crate writes into a world file and
+// `wgvb_store::fingerprint` is what every caller and every gate already names.
 pub use overlay::{Bounds, Settlement};
 pub use player::{Player, PlayerError};
 pub use schema::SCHEMA_VERSION;
+pub use wgvb_config::{
+    CanonicalError, FINGERPRINT_LEN, Fingerprint, canonical_config_bytes, fingerprint,
+    fingerprint_of_bytes,
+};
 pub use world::World;
 
 /// `PRAGMA application_id` for every WGVB database: ASCII `"WGVB"`.

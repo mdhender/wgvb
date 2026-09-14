@@ -13,8 +13,9 @@ use wgvb_render::{
     terrain_color,
 };
 
+use wgvb_view::{COMPASS, Compass, MAX_HEX_RADIUS, MIN_HEX_RADIUS, View};
+
 use crate::source::Source;
-use crate::view::{COMPASS, Compass, MAX_HEX_RADIUS, MIN_HEX_RADIUS, View};
 
 /// Renders the viewer page for one view.
 ///

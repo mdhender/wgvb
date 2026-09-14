@@ -15,6 +15,10 @@ path = "src/main.rs"
 [dependencies]
 wgvb.workspace = true
 wgvb-store.workspace = true
+
+# `--config` renders a tuned configuration, which is what `wgvb-tune`
+# downloads. One crate defines that file's format; this one reads it.
+wgvb-config.workspace = true
 wgvb-render.workspace = true
 clap.workspace = true
 
@@ -31,6 +35,10 @@ clap.workspace = true
 # `wgvb-serve` does not depend on `wgvb-map` — and it does not appear in a
 # consumer's graph, the same standing `ciborium` has in `wgvb`.
 [dev-dependencies]
+# The agreement tests drive the two web front ends as libraries rather than
+# over a socket. Each is a dev-dependency of this crate and not the other way
+# round, so the dependency graph in DESIGN.md section 28 is unchanged.
+wgvb-tune.workspace = true
 png.workspace = true
 wgvb-render.workspace = true
 wgvb-serve.workspace = true

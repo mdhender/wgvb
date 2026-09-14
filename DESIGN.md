@@ -1672,16 +1672,39 @@ Dependencies flow one direction only:
 wgvb-map    ->  wgvb-render  ->  wgvb
     |               |
     +-> wgvb-store ----------->  wgvb
+    +-> wgvb-config ---------->  wgvb
 
-wgvb-serve  ->  wgvb-render  ->  wgvb
+wgvb-serve  ->  wgvb-view -> wgvb-render  ->  wgvb
     |               |
     +-> wgvb-store ----------->  wgvb
+
+wgvb-tune   ->  wgvb-view -> wgvb-render  ->  wgvb
+    |
+    +-> wgvb-config ---------->  wgvb
 ```
 
 `wgvb-serve` gained its `wgvb-store` edge with `--db`, which section 29.1 had
 planned for from the start. It points the same way as every other edge here:
 toward the core, never away from it, and the core still depends on exactly
 `serde` and `thiserror`.
+
+Two library crates sit between the front ends and the renderer, and each exists
+because a thing was about to be written twice:
+
+- **`wgvb-view`** owns the window grammar — what `?q=`, `?cols=`, and `?layer=`
+  mean, what a scroll step is, and which refusal a malformed one earns. There
+  are two web front ends and that grammar carries invariants with tests behind
+  it, so it is one crate rather than one copy each.
+- **`wgvb-config`** owns what a configuration *weighs*: the canonical CBOR of
+  section 21.2, the fingerprint over it, and the TOML file a person edits. The
+  fingerprint lived in `wgvb-store` until `wgvb-tune` needed one, and a tuner
+  that linked `rusqlite` to name a fingerprint would be a tuner that could open
+  a world.
+
+**`wgvb-tune` has no `wgvb-store` edge, and that is the design rather than an
+omission.** It cannot open a world, create one, or write to one, and that is a
+property of `Cargo.toml` rather than a promise in a document — the same trick
+that makes "persistence is not in the core" a compile-time fact.
 
 `wgvb-serve` is a separate crate rather than a mode of `wgvb-map`. A server
 drags in an HTTP stack, and possibly an async runtime, and the CLI has no use
@@ -1913,6 +1936,120 @@ it would have claimed a cache of terrain PNGs was stale when it is not. Note
 also what that version does *not* cover: a cached player PNG depends on the
 overlays as well as the palette, and overlays are mutable player state with no
 version at all. That is a reason not to cache one.
+
+---
+
+### 29.3 Tuning instrument
+
+`wgvb-tune` is a second web front end, and the first thing to say about it is
+what it is not: it is not a better viewer, and `wgvb-serve` is not being
+replaced by it. Looking at a world somebody saved, without starting the game
+engine, stays the viewer's job.
+
+The two exist separately because they cannot keep the same promise.
+
+- **The viewer is stateless.** Every state it can be in is a URL, so a link
+  means the same thing to everybody who opens it and the same thing tomorrow.
+- **The tuner is stateful.** The thing it exists to change is the complete
+  effective configuration — a hundred numeric fields — and a hundred fields do
+  not fit in an address bar. So the configuration lives in the server's memory,
+  a form changes it, and a `POST` is how.
+
+Trying to make one tool do both was most of the complexity in the issue that
+preceded this section, and all of that complexity came from the same place: an
+override mechanism expressive enough to tune with is a configuration file, and a
+configuration file does not belong in a query string.
+
+What the tuner gives up is real, and it is named on every page: a link to a
+window shows what that server is drawing *now*, not what it drew when the link
+was copied. What it keeps is the fingerprint. Every tab prints it, the download
+turns the configuration behind it back into a file, and `wgvb-map --config`
+draws that file — so a picture can always be traced to the configuration that
+produced it, and reproduced outside the tuner.
+
+```text
+GET  /seed/{seed}                  the hex map, drawn as the viewer draws it
+GET  /seed/{seed}/grid             one pixel per hex, for a very large area
+GET  /seed/{seed}/config           the complete effective configuration, as a form
+POST /seed/{seed}/config/fields    apply the form
+POST /seed/{seed}/config/upload    adopt an uploaded or pasted file
+POST /seed/{seed}/config/reset     go back to this binary's defaults
+GET  /config.toml                  download what is being drawn
+```
+
+**Everything about the view is still in the URL.** Only the configuration is
+not. Tabs are routes, the turn and the scale are parameters, and the controls a
+person clicks — zoom, window size, seed, jump-to-coordinate — are links and
+`GET` forms, so the address bar keeps up and the back button still works.
+
+**The `ETag` stays strong.** It stops being a pure function of the URL, which is
+the departure, but the configuration's fingerprint is in the tag: move a field
+and every tag moves with it, so a browser holding an old image asks again. Eight
+bytes of it rather than the four a page prints, because a tuning session walks
+through hundreds of configurations under otherwise identical URLs.
+
+#### The grid
+
+One pixel per hex — or N, at an explicit scale — so that a million tiles can be
+looked at in one image. `Viewport` was already a rectangle of even-`q` offset
+cells and `Viewport::coord_at` was already the offset conversion, so the grid is
+the same window walk with hex hit testing dropped, sharing one function with the
+hex path. It lives in `wgvb-render` as `render_grid`, and `wgvb-map --grid`
+draws it too, which is how the sheets under `docs/renders/` are made.
+
+What it distorts: a hex row's centers are `sqrt(3) r` apart and a column's are
+`1.5 r`, so drawing both as one pixel stretches the image vertically by about
+15% and flattens the half-hex column stagger. That is the price of the view and
+it is stated on the page.
+
+Rendering is parallel — `rayon`, across columns — which is exactly the
+permission section 20 grants: every cell is a pure function of its own
+coordinate written to its own slot, so the work-stealing split cannot reach the
+result, and nothing here accumulates across tiles.
+
+**The bound is a budget counted in generator evaluations, not in tiles.**
+`relief`, `climate`, and `terrain` cost seven evaluations apiece and every other
+layer costs one, so a tile count could not tell a cheap window from one seven
+times longer. Over budget is a 400 naming the number, and `--budget` raises it,
+because measuring how long a large window takes is a thing this tool is for.
+
+#### The turn
+
+A `turn` in `0..6` rotates the sampled region a sixth of a turn about the window
+centre. A hex grid rotated by a sixth maps onto itself exactly, so nothing is
+resampled and nothing interpolates: `Coord::rotate` does it in integers, and
+none of section 25 is disturbed. `turn = 0` is the identity, which is what lets
+every golden and every byte-agreement assertion stand unchanged.
+
+It is the drawing half of `PlayerFrame`, which converts coordinates and says in
+its own documentation that it does not draw. Rendering through a player's frame
+is this primitive with the pivot at `frame.origin()` and `t = frame.rotation()
+- 2`, where the `-2` is the layout constant — screen-up is absolute direction 2
+and a frame's north is relative direction 0.
+
+On the **grid**, four of the six turns shear the picture, and the page says so.
+The grid's distortion has two-fold symmetry while the hex grid has six-fold, so
+only turns 0 and 3 lie in both; the other four change angles and introduce
+apparent directionality that varies with the turn — which is exactly the
+artifact a turned view is usually being used to look for. The hex tab needs no
+such warning at any turn.
+
+#### The configuration file
+
+TOML, flat, one key per line, with the algorithm version and the fingerprint in
+a comment header. It round-trips an `f64` exactly, `deny_unknown_fields` still
+rejects a file from a newer binary rather than half-applying it, and a missing
+field is still a refusal rather than a default — section 21.1, one level up. The
+settling test is the round trip asserted on the fingerprint as well as the
+value, because a file that loses a low bit is a silently different world.
+
+#### Same standing as every other front end
+
+`wgvb-tune` is not a second renderer. Whatever it draws goes into `wgvb-render`
+or into the URL, and `crates/wgvb-map/tests/agrees_with_the_tuner.rs` is the
+assertion that says so: the bytes the CLI writes and the bytes the tuner returns
+for one window — grid and hex, every turn, and a tuned configuration through a
+file — are the same bytes.
 
 ---
 
