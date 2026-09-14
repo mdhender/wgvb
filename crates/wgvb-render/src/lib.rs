@@ -42,6 +42,7 @@
 //! the layout's top is absolute direction 2 while a frame's north is its own
 //! direction 0.
 
+mod distribution;
 mod frame;
 mod overlay;
 mod palette;
@@ -50,6 +51,7 @@ use hexx::{Hex, HexLayout, HexOrientation, OffsetHexMode, Vec2};
 use rayon::prelude::*;
 use wgvb::{Component, Coord, DIRECTION_COUNT, Generator, Sample};
 
+pub use distribution::Distribution;
 pub use frame::{FrameError, PlayerFrame};
 pub use overlay::Overlays;
 pub use palette::{

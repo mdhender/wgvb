@@ -393,3 +393,84 @@ fn an_image_says_what_it_cost() {
     assert!(reply.note.contains("tiles"), "{}", reply.note);
     assert!(reply.note.contains("generate"), "{}", reply.note);
 }
+
+#[test]
+fn the_map_tab_says_what_is_in_the_window() {
+    // The readout is the numeric half of a tuning pass: a picture says a
+    // threshold moved something, and this says what and by how much.
+    let session = session();
+    let reply = get(&format!("/seed/{SEED_TEXT}?{}", query()), &session);
+    assert_eq!(reply.status, 200, "{}", reply.text());
+    let html = reply.text();
+
+    assert!(html.contains("what is in this window"), "no readout");
+    // Every terrain, including the ones that are not there — a row reading zero
+    // is usually the row somebody is trying to move off zero.
+    for terrain in wgvb::Terrain::ALL {
+        assert!(
+            html.contains(terrain.name()),
+            "{} is missing from the readout",
+            terrain.name()
+        );
+    }
+    // And the three ladders beside it.
+    for band in wgvb::Elevation::ALL {
+        assert!(html.contains(band.name()), "{} is missing", band.name());
+    }
+    assert!(html.contains("<caption>heat</caption>"));
+    assert!(html.contains("<caption>moisture</caption>"));
+}
+
+#[test]
+fn the_readout_counts_the_window_that_is_on_the_screen() {
+    // Not a fixed window and not the whole world: what the numbers describe has
+    // to be what the image beside them shows.
+    let session = session();
+    let window = Window::origin_of(SEED);
+    let reply = get(&format!("/seed/{SEED_TEXT}?{}", window.query()), &session);
+
+    let viewport = window.viewport().expect("a valid window");
+    let (cols, rows) = viewport.tile_counts();
+    let expected =
+        wgvb_render::Distribution::of(&session.state().generator(SEED), viewport.coords());
+
+    let html = reply.text();
+    assert!(
+        html.contains(&format!(
+            "{} tiles, counted",
+            u64::from(cols) * u64::from(rows)
+        )),
+        "the readout does not name the window's tile count"
+    );
+    // One terrain's count, spelled out, so the page cannot be showing somebody
+    // else's window.
+    let (terrain, count) = expected
+        .terrain()
+        .max_by_key(|(_, count)| *count)
+        .expect("a window has a commonest terrain");
+    assert!(count > 0);
+    assert!(
+        html.contains(&format!("{count}")),
+        "the count of {} is not on the page",
+        terrain.name()
+    );
+}
+
+#[test]
+fn a_page_whose_readout_would_cost_too_much_is_refused_like_an_image() {
+    // The readout is a whole `Tile` per cell — seven evaluations — so the page
+    // is no longer free and goes through the same budget the images do.
+    let session = session();
+    let window = Window::origin_of(SEED);
+    let target = format!("/seed/{SEED_TEXT}?{}", window.query());
+    assert_eq!(
+        get(&target, &session).status,
+        200,
+        "the default window fits"
+    );
+
+    let tiny_budget = 1_000;
+    let reply = answer(&target, false, "", &[], &session, tiny_budget);
+    assert_eq!(reply.status, 400);
+    assert!(reply.text().contains("budget"), "{}", reply.text());
+}

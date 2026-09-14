@@ -204,6 +204,16 @@ fn read(tab: Tab, window: &Window, session: &Session, budget: u64) -> Reply {
                 Ok(viewport) => viewport,
                 Err(error) => return refuse_view(&ViewError::from(error)),
             };
+            // The page costs real work now: the distribution readout is a whole
+            // `Tile` per cell, which is seven evaluations whatever layer is
+            // being drawn. So the page goes through the same budget the image
+            // does, counted at the terrain layer's price rather than the
+            // selected layer's.
+            let (cols, rows) = viewport.tile_counts();
+            let tiles = u64::from(cols) * u64::from(rows);
+            if let Some(refusal) = over_budget(tiles, Layer::Terrain, budget) {
+                return refusal;
+            }
             Reply {
                 status: 200,
                 content_type: HTML,

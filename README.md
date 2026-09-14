@@ -234,6 +234,12 @@ cores — so a continent can be judged in one look. **config** is the complete
 effective configuration as a form: change a field, apply it, and the map redraws
 under it.
 
+The map tab also counts what is in the window — the terrain mix, the elevation
+bands, and the two climate ladders — so a threshold move can be read as a number
+and not only squinted at. Moving `dry_level` from `-0.1` to `0.0` takes one
+coastal window from 6% dry to 62%, and from 70% plains to 33% plains and 38%
+grassland.
+
 ```sh
 # start from a configuration you saved earlier
 cargo run --release -p wgvb-tune -- --config tuned.toml --seed feedface

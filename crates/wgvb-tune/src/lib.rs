@@ -87,7 +87,13 @@ pub const MAX_BODY_BYTES: usize = 256 * 1024;
 /// covers the world and the render version covers the pixels, and neither says
 /// anything about the HTML, so a release that changes the page alone would
 /// serve a stale one to a browser holding the old bytes.
-pub const PAGE_VERSION: u32 = 1;
+///
+/// # History
+///
+/// - **1** — the tuner as it first shipped.
+/// - **2** — the distribution readout. The map tab now says what is *in* the
+///   window as well as drawing it.
+pub const PAGE_VERSION: u32 = 2;
 
 /// How the server was asked to listen, and what it was asked to draw.
 #[derive(Debug, Clone)]

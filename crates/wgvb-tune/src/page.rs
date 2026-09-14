@@ -18,7 +18,8 @@ use std::fmt::Write as _;
 
 use wgvb::{ALGORITHM_VERSION, Climate, Coord, Generator, HeatBand, MoistureBand, Terrain};
 use wgvb_render::{
-    Grid, Key, Layer, RENDER_VERSION, Scale, Viewport, climate_color, color, terrain_color,
+    Distribution, Grid, Key, Layer, RENDER_VERSION, Scale, Viewport, climate_color, color,
+    terrain_color,
 };
 use wgvb_view::{COMPASS, Compass, MAX_HEX_RADIUS, MIN_HEX_RADIUS};
 
@@ -85,6 +86,8 @@ pub fn map(window: &Window, viewport: &Viewport, generator: &Generator, state: &
         window.view.hex_radius, window.turn,
     );
     html.push_str("</dl>\n");
+
+    html.push_str(&mix(&Distribution::of(generator, viewport.coords())));
 
     html.push_str(&window_form(window));
     html.push_str(&jump_form(window, Tab::Map));
@@ -605,6 +608,97 @@ fn tile_readout(generator: &Generator, center: Coord) -> String {
     html
 }
 
+/// What is in the window, counted.
+///
+/// The other half of tuning. A threshold that was moved to put more steppe in
+/// the world produces a picture somebody has to squint at and a number they do
+/// not: `crates/wgvb/tests/terrain.rs` measures this globally and cannot say
+/// what one window holds, and one window is what is on the screen.
+///
+/// Every terrain is listed, including the ones that are not here, because a row
+/// reading zero is usually the row somebody is trying to move off zero. The
+/// three ladders are listed in their own order — elevation low to high, heat
+/// cold to hot, moisture dry to wet — so a shape can be read off them at a
+/// glance rather than a ranking.
+fn mix(counted: &Distribution) -> String {
+    if counted.is_empty() {
+        return String::new();
+    }
+
+    let mut html = String::new();
+    let _ = writeln!(
+        html,
+        "<h2>what is in this window</h2>\n<p class=\"quiet\">{} tiles, counted \
+         where they are drawn. A window that wraps a world edge shows a tile \
+         twice and counts it twice, because it is on the screen twice.</p>",
+        counted.tiles()
+    );
+
+    html.push_str("<div class=\"mixes\">\n");
+    html.push_str(&bars(
+        "terrain",
+        counted,
+        counted
+            .terrain()
+            .map(|(terrain, count)| (terrain.name(), Some(terrain_color(terrain)), count)),
+    ));
+    html.push_str(&bars(
+        "elevation",
+        counted,
+        counted
+            .elevation()
+            .map(|(band, count)| (band.name(), None, count)),
+    ));
+    html.push_str(&bars(
+        "heat",
+        counted,
+        counted
+            .heat()
+            .map(|(band, count)| (band.name(), None, count)),
+    ));
+    html.push_str(&bars(
+        "moisture",
+        counted,
+        counted
+            .moisture()
+            .map(|(band, count)| (band.name(), None, count)),
+    ));
+    html.push_str("</div>\n");
+    html
+}
+
+/// One histogram: a name, a share, and a bar as wide as the share.
+///
+/// The bar is a `<div>` with a width in per cent rather than an image or a
+/// glyph, so it reads at any zoom and costs no request. A row that is present
+/// but empty is drawn dimmed rather than omitted; see [`mix`].
+fn bars<'a>(
+    title: &str,
+    counted: &Distribution,
+    rows: impl Iterator<Item = (&'a str, Option<[u8; 4]>, u64)>,
+) -> String {
+    let mut html = String::new();
+    let _ = writeln!(html, "<table class=\"mix\">\n<caption>{title}</caption>");
+    for (name, rgba, count) in rows {
+        let share = counted.share(count);
+        let swatch = rgba.map_or_else(String::new, |rgba| {
+            format!(
+                "<i style=\"background:#{:02x}{:02x}{:02x}\"></i>",
+                rgba[0], rgba[1], rgba[2]
+            )
+        });
+        let _ = writeln!(
+            html,
+            "<tr class=\"{}\"><th scope=\"row\">{swatch}{name}</th>\
+             <td class=\"n\">{count}</td><td class=\"n\">{share:.1}%</td>\
+             <td class=\"bar\"><div style=\"width:{share:.2}%\"></div></td></tr>",
+            if count == 0 { "none" } else { "" },
+        );
+    }
+    html.push_str("</table>\n");
+    html
+}
+
 /// The key for whichever layer is being drawn.
 fn legend(layer: Layer) -> String {
     match layer.key() {
@@ -790,6 +884,18 @@ input, textarea, button { font: inherit; background: var(--paper); color: var(--
                           border: 1px solid var(--edge); border-radius: 3px; padding: 3px 6px; }
 button { cursor: pointer; }
 button:hover { border-color: var(--ink); }
+.mixes { display: flex; flex-wrap: wrap; gap: 8px 32px; margin: 12px 0; align-items: flex-start; }
+table.mix { border-collapse: collapse; }
+table.mix caption { text-align: left; color: var(--quiet); padding-bottom: 4px; }
+table.mix th { font-weight: 400; text-align: left; padding: 1px 10px 1px 0; white-space: nowrap; }
+table.mix th i { display: inline-block; width: 1.4em; height: 0.9em; border: 1px solid var(--edge);
+                 vertical-align: -1px; margin-right: 6px; }
+table.mix td { padding: 1px 10px 1px 0; }
+table.mix td.n { text-align: right; color: var(--quiet); font-variant-numeric: tabular-nums; }
+table.mix td.bar { width: 9em; }
+table.mix td.bar div { height: 0.8em; background: var(--ink); min-width: 1px; }
+table.mix tr.none { color: var(--quiet); opacity: 0.55; }
+table.mix tr.none td.bar div { background: none; min-width: 0; }
 table.config { border-collapse: collapse; margin: 12px 0; }
 table.config th { font-weight: 400; text-align: left; color: var(--quiet); padding: 2px 12px 2px 0; }
 table.config td { padding: 2px 12px 2px 0; }

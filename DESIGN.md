@@ -2034,6 +2034,33 @@ apparent directionality that varies with the turn — which is exactly the
 artifact a turned view is usually being used to look for. The hex tab needs no
 such warning at any turn.
 
+#### The distribution readout
+
+The map tab counts what is in the window it is drawing: the terrain mix, the
+elevation band histogram, and the two climate ladders.
+`crates/wgvb/tests/terrain.rs` and `tests/elevation.rs` already measure this
+globally — every terrain reachable, none dominating — and what they cannot say
+is whether the threshold somebody just moved did what they meant *here*. Moving
+`dry_level` from `-0.1` to `0.0` takes one coastal window from 6% dry to 62%,
+and from 70% plains to 33% plains and 38% grassland; the picture says something
+changed and the readout says what.
+
+Every terrain is listed, including the ones with no tiles, because a row reading
+zero is usually the row somebody is trying to move off zero.
+
+`Distribution` lives in `wgvb-render` — it is a measurement over a window, and a
+window is that crate's — so a front end and the CLI cannot disagree about what a
+window contains. It costs a whole `Tile` per cell, which is seven evaluations
+whatever layer is on screen, so the map *page* now goes through the same
+evaluation budget the images do, and the grid tab does not show one: a million
+tiles of readout is seven million evaluations for a second copy of work the
+image already did.
+
+These are integer counts accumulated in one thread. That is not the
+accumulation section 20 forbids in a batch fill — that rule is about a
+work-stealing split deciding a floating-point sum — and a test asserts the count
+does not depend on the order the coordinates arrive in.
+
 #### The configuration file
 
 TOML, flat, one key per line, with the algorithm version and the fingerprint in
