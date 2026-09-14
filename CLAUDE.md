@@ -221,6 +221,37 @@ wgvb-tune   ->  wgvb-view -> wgvb-render  ->  wgvb
 - Rust module privacy replaces Go's `internal/`. A module is private unless
   declared `pub`; use `pub(crate)` for the rest.
 
+## Naming, outside the repository
+
+Crate names are for the repository. In a status report, a roadmap line, or any
+conversation with project management, name a tool by **what it does**, not by
+what it is built as.
+
+| crate | say | in one line |
+|---|---|---|
+| `wgvb-serve` | the map viewer | looks at a world that is already saved |
+| `wgvb-tune` | the terrain tuning tool | decides how worlds look; cannot open or change one |
+| `wgvb-map` | the map renderer | writes one window to one image file |
+
+- **Never call `wgvb-tune` a server.** It is one, and the word is the problem:
+  it invites hosting cost, uptime, scaling, and a security review for something
+  that binds to `127.0.0.1`, has no authentication, and has exactly one user on
+  one machine for as long as a browser tab is open. Same for `wgvb-serve`.
+- **Never call it "the tuner" on its own.** That reads as a runtime knob some
+  operator or player adjusts, which is the opposite of what it is.
+- Pair the name with its boundary the first time it comes up: *it runs on a
+  developer's machine and produces a settings file; nothing is deployed and no
+  player ever touches it.*
+- **Volunteer that it cannot touch a saved world.** That question gets asked
+  eventually, and the answer is better than "we are careful": `wgvb-tune` has no
+  `wgvb-store` edge, so it is a compile-time fact. See Workspace above.
+- **Report the output, not the tool.** The deliverable is that the world's
+  appearance is a versioned file with a fingerprint on it, so any picture can be
+  traced to the configuration that produced it and reproduced elsewhere. The web
+  interface is only how somebody drives it.
+- If a roadmap line needs one word of hedge, it is **internal** tooling —
+  signals "not shipped" without implying "not important".
+
 ## Verification
 
 - Run `cargo fmt`, `cargo clippy --workspace --all-targets`, and
